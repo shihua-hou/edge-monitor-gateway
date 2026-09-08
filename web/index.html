@@ -1,0 +1,1496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- 禁止缓存。后端是 `python3 -m http.server`，它只发 Last-Modified、不发
+     Cache-Control，浏览器于是按启发式规则自作主张地缓存页面——改完文件 scp
+     上去、刷新却还是旧界面，很容易误判成"文件没传上去"。开发阶段这三行
+     省掉的排查时间远比那点带宽值钱。 -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>EdgeMonitor Control Center</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+/* ============================================================
+   设计系统：CSS 变量做主题，深色为默认（大屏监控场景更常见），
+   系统设置页可以切换到浅色 —— 不是简单反色，是两套独立调过的配色
+   ============================================================ */
+/* 深色主题直接采用大屏那套深蓝配色。之前控制台是"黑底绿字"、大屏是
+   "深蓝青字"，两套色系并存，从大屏点进控制台像换了个产品——割裂感
+   主要来自这里，不是布局。统一到一套之后，两边只是信息密度不同 */
+:root, [data-theme="dark"] {
+  --bg:#050b18; --bg-elevated:#0a1a33; --sidebar:#071426;
+  --card:#0d1e38; --card-hover:#123054; --border:rgba(77,159,255,.24);
+  --text:#e8f2ff; --text-dim:#8ab0dc; --text-faint:#5b7ba6;
+  --accent:#35d6ff; --accent-dim:#1d7fa8; --accent2:#4d9fff; --accent3:#a98bff;
+  --warn:#ffab3d; --warn-bg:#3a2a10; --danger:#ff4d6d; --danger-bg:#3a1420;
+  --ok-bg:#0c3348; --shadow:0 8px 24px rgba(0,10,30,.5);
+}
+[data-theme="light"] {
+  --bg:#eef1f6; --bg-elevated:#ffffff; --sidebar:#ffffff;
+  --card:#ffffff; --card-hover:#f6f8fb; --border:#dde3ec;
+  --text:#151b26; --text-dim:#5c6b7f; --text-faint:#93a0b3;
+  --accent:#0ea472; --accent-dim:#0b7d57; --accent2:#2f7de0; --accent3:#8b5cf6;
+  --warn:#b3720a; --warn-bg:#fdf1da; --danger:#d92a4f; --danger-bg:#fce4e9;
+  --ok-bg:#e2f7ee; --shadow:0 8px 24px rgba(30,40,60,.12);
+}
+* { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI','Microsoft YaHei',sans-serif; }
+html, body { height:100%; }
+body { background:var(--bg); color:var(--text); overflow:hidden; }
+::-webkit-scrollbar { width:8px; height:8px; }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+
+/* ---------- 登录层 ---------- */
+/* 登录页。左边说明这是什么系统，右边是表单——原来只有一个居中小卡片，
+   除了"输入账号密码"什么信息都没有，看不出是干什么的。
+   背景的网格纹理和大屏是同一套语言，一进来就知道是同一个产品 */
+#loginOverlay { position:fixed; inset:0; z-index:200; display:flex;
+  align-items:center; justify-content:center; overflow:auto;
+  background:
+    radial-gradient(ellipse at 20% 0%, #12335f 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 100%, #0b2547 0%, transparent 50%),
+    #050b18; }
+#loginOverlay::before {
+  content:''; position:absolute; inset:0; pointer-events:none; opacity:.5;
+  background-image:
+    linear-gradient(rgba(90,169,255,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(90,169,255,.05) 1px, transparent 1px);
+  background-size:38px 38px;
+  -webkit-mask-image:radial-gradient(ellipse at 50% 45%, #000 25%, transparent 80%);
+          mask-image:radial-gradient(ellipse at 50% 45%, #000 25%, transparent 80%); }
+
+.login-grid { position:relative; display:grid; grid-template-columns:1.15fr .85fr;
+  gap:56px; align-items:center; max-width:940px; width:calc(100% - 64px);
+  padding:40px 0; animation:popIn .35s cubic-bezier(.2,.8,.3,1); }
+@keyframes popIn { from{opacity:0; transform:translateY(12px);} to{opacity:1; transform:none;} }
+
+.login-brand .lb-tag { font-size:11px; letter-spacing:3px; color:var(--accent);
+  margin-bottom:16px; font-family:Consolas,monospace; }
+.login-brand h1 { font-size:34px; line-height:1.35; font-weight:400; color:var(--text-dim);
+  letter-spacing:1px; margin-bottom:18px; }
+.login-brand h1 b { color:#fff; font-weight:700;
+  text-shadow:0 0 24px rgba(77,159,255,.45); }
+.lb-desc { font-size:13px; line-height:1.9; color:var(--text-faint); max-width:440px;
+  margin-bottom:26px; }
+.lb-specs { display:flex; gap:28px; flex-wrap:wrap; }
+.lb-specs > div { border-left:2px solid var(--accent); padding-left:12px; }
+.lb-specs b { display:block; font-size:12px; color:var(--text); font-weight:600; margin-bottom:3px; }
+.lb-specs span { font-size:11px; color:var(--text-faint); font-family:Consolas,monospace; }
+
+.login-form { background:linear-gradient(180deg, rgba(38,96,170,.22), rgba(10,28,58,.4));
+  border:1px solid rgba(110,185,255,.3); padding:28px 26px 24px;
+  box-shadow:inset 0 1px 0 rgba(160,215,255,.2), 0 18px 40px rgba(0,10,30,.5);
+  clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px); }
+.lf-head { display:flex; align-items:center; gap:12px; margin-bottom:22px; }
+.login-form .logo { width:42px; height:42px; flex-shrink:0; border-radius:3px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex;
+  align-items:center; justify-content:center; font-size:17px; font-weight:800; color:#04140d;
+  clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px); }
+.lf-title { font-size:16px; font-weight:600; color:var(--text); letter-spacing:1px; }
+.lf-sub { font-size:11px; color:var(--text-faint); margin-top:2px; }
+.lf-label { display:block; font-size:11px; color:var(--text-dim); letter-spacing:1px;
+  margin-bottom:6px; }
+.lf-hint { font-size:10.5px; color:var(--text-faint); margin:-6px 0 12px; }
+.login-form input { width:100%; padding:10px 12px; margin-bottom:14px; box-sizing:border-box;
+  background:rgba(5,14,30,.6); border:1px solid var(--border); border-radius:3px;
+  color:var(--text); font-size:14px; font-family:inherit; transition:border-color .15s, box-shadow .15s; }
+.login-form input:focus { outline:none; border-color:var(--accent);
+  box-shadow:0 0 0 2px rgba(53,214,255,.14); }
+.login-form button { width:100%; padding:11px; margin-top:6px; }
+.login-err { color:var(--danger); font-size:12px; margin-top:12px; min-height:16px; }
+
+/* 窄屏：品牌区收起来，只留表单，免得挤成一团 */
+@media (max-width:820px) {
+  .login-grid { grid-template-columns:1fr; gap:28px; max-width:420px; }
+  .login-brand h1 { font-size:26px; }
+  .lb-desc, .lb-specs { display:none; }
+}
+
+/* ---------- 整体外壳：侧边栏 + 主体 ---------- */
+#appShell { display:none; height:100vh; }
+#appShell.show { display:flex; }
+.sidebar { width:220px; flex-shrink:0; background:var(--sidebar); border-right:1px solid var(--border);
+           display:flex; flex-direction:column; padding:18px 12px; }
+.brand { display:flex; align-items:center; gap:10px; padding:0 8px 20px; }
+.brand .mark { width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,var(--accent),var(--accent2));
+               display:flex; align-items:center; justify-content:center; font-weight:800; color:#04140d; font-size:15px; }
+.brand .name { font-size:15px; font-weight:700; line-height:1.2; }
+.brand .sub { font-size:10px; color:var(--text-faint); letter-spacing:.5px; }
+.nav { display:flex; flex-direction:column; gap:2px; flex:1; }
+.nav-item { display:flex; align-items:center; gap:12px; padding:11px 12px; border-radius:10px;
+            color:var(--text-dim); cursor:pointer; font-size:14px; transition:background .15s,color .15s; position:relative; }
+.nav-item:hover { background:var(--card-hover); color:var(--text); }
+.nav-item.active { background:linear-gradient(90deg, rgba(53,214,255,.16), transparent); color:var(--accent); }
+.nav-item.active::before { content:''; position:absolute; left:-12px; top:8px; bottom:8px; width:3px;
+                            background:var(--accent); border-radius:0 3px 3px 0;
+                            box-shadow:0 0 8px var(--accent); }
+.nav-item .ic { width:18px; text-align:center; font-size:15px; }
+.nav-item .badge { margin-left:auto; background:var(--danger); color:#fff; font-size:10px; font-weight:700;
+                    border-radius:9px; padding:1px 6px; min-width:16px; text-align:center; }
+.sidebar-footer { border-top:1px solid var(--border); padding-top:12px; margin-top:8px; }
+.user-chip { display:flex; align-items:center; gap:9px; padding:8px; border-radius:10px; }
+.user-chip .avatar { width:30px; height:30px; border-radius:50%; background:var(--card-hover);
+    display:flex; align-items:center; justify-content:center; font-size:13px; color:var(--accent); font-weight:700; }
+.user-chip .uname { font-size:13px; font-weight:600; }
+.user-chip .uhost { font-size:10px; color:var(--text-faint); }
+.user-chip .logout-btn { margin-left:auto; background:transparent; border:none; color:var(--text-faint);
+    cursor:pointer; font-size:15px; padding:4px; }
+.user-chip .logout-btn:hover { color:var(--danger); }
+
+.main { flex:1; display:flex; flex-direction:column; min-width:0; }
+.topbar { height:60px; flex-shrink:0; display:flex; align-items:center; padding:0 24px; gap:14px;
+          border-bottom:1px solid var(--border); background:var(--bg-elevated); }
+.topbar h1 { font-size:17px; font-weight:700; }
+.topbar .crumb { font-size:12px; color:var(--text-faint); }
+.topbar .spacer { flex:1; }
+.clock { font-size:13px; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.conn-pill { display:flex; align-items:center; gap:7px; padding:6px 12px; border-radius:20px;
+             background:var(--card); border:1px solid var(--border); font-size:12px; }
+.conn-pill .dot { width:8px; height:8px; border-radius:50%; background:var(--text-faint); transition:background .2s; }
+.conn-pill.online .dot { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+.conn-pill.offline .dot { background:var(--danger); }
+/* 这几条要显式覆盖全局 button 的样式：全局 button 带 padding:10px 18px
+   和切角 clip-path，套在 38×38 的方形图标按钮上会把图标挤偏、还把右下角
+   切掉一块，看起来就是"图标位置不正常"。padding 归零 + flex 居中才对得住 */
+.bell-btn { position:relative; width:38px; height:38px; padding:0; border-radius:3px;
+            display:flex; align-items:center; justify-content:center;
+            clip-path:none; background:var(--card);
+            border:1px solid var(--border); color:var(--text-dim); cursor:pointer; font-size:16px;
+            line-height:1; flex-shrink:0; }
+.bell-btn:hover { color:var(--text); border-color:var(--accent); }
+/* 角标压在按钮右上角，用 translate 做半溢出，比硬调 top/right 更稳 */
+.bell-btn .dot { position:absolute; top:0; right:0; transform:translate(35%,-35%);
+                 width:9px; height:9px; border-radius:50%;
+                 border:2px solid var(--bg-elevated);
+                 background:var(--danger); display:none; }
+.bell-btn.has-alert .dot { display:block; }
+
+.page-container { flex:1; overflow-y:auto; padding:22px 26px 40px; position:relative; }
+.page { display:none; }
+.page.active { display:block; animation:pageIn .28s cubic-bezier(.2,.8,.3,1); }
+@keyframes pageIn { from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;} }
+
+/* ---------- 通用组件 ---------- */
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; margin-bottom:20px; }
+/* 卡片/分区沿用大屏的语言：切角、半透明玻璃底、竖条标题标记。
+   区别只在密度——控制台是操作页，留白比大屏大 */
+.card { background:linear-gradient(180deg, rgba(38,96,170,.16), rgba(10,28,58,.3));
+        border:1px solid var(--border); border-radius:3px; padding:16px;
+        clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
+        transition:background .15s; }
+.card:hover { background:linear-gradient(180deg, rgba(45,115,200,.24), rgba(10,28,58,.34)); }
+.card .label { font-size:12px; color:var(--text-dim); margin-bottom:8px; display:flex; align-items:center; gap:6px;
+        letter-spacing:1px; }
+.card .value { font-size:27px; font-weight:600; color:var(--accent); font-variant-numeric:tabular-nums;
+        font-family:'Bahnschrift','DIN Alternate',Consolas,monospace; text-shadow:0 0 14px rgba(53,214,255,.4); }
+.card .value.alert { color:var(--danger); text-shadow:0 0 14px rgba(255,77,109,.4); }
+.card .unit { font-size:13px; color:var(--text-faint); margin-left:3px; font-weight:400; }
+.card .trend { font-size:11px; color:var(--text-faint); margin-top:4px; }
+
+.section { background:linear-gradient(180deg, rgba(38,96,170,.14), rgba(10,28,58,.28));
+        border:1px solid var(--border); border-radius:3px; padding:0 18px 18px; margin-bottom:18px;
+        box-shadow:inset 0 1px 0 rgba(160,215,255,.16); }
+.section-head { display:flex; align-items:center; gap:10px; position:relative;
+        margin:0 -18px 16px; padding:10px 16px 9px;
+        background:linear-gradient(90deg, rgba(45,110,190,.32), transparent 70%); }
+.section-head::before { content:''; width:3px; height:13px; border-radius:1px; flex-shrink:0;
+        background:var(--accent); box-shadow:0 0 8px var(--accent); }
+.section-head::after { content:''; position:absolute; left:0; right:0; bottom:0; height:1px;
+        background:linear-gradient(90deg, var(--border), transparent); }
+.section-head h2 { font-size:14px; font-weight:600; color:var(--text); letter-spacing:2px; }
+.section-head .hint { font-size:11px; color:var(--text-faint); margin-left:auto; }
+.two-col { display:grid; grid-template-columns:1.3fr 1fr; gap:18px; align-items:start; }
+.two-col.rev { grid-template-columns:1fr 1.3fr; }
+@media (max-width:1100px) { .two-col, .two-col.rev { grid-template-columns:1fr; } }
+
+/* ---------- 移动端：侧边栏改成覆盖式抽屉，不挤压主内容 ----------
+   桌面端 .sidebar 是 flex 布局里的固定 220px 常驻列；窄屏幕下如果还占着
+   这 220px，主内容区被压缩到 150px 左右，标题文字会被挤成竖排、内容
+   横向溢出出现页面级滚动条——这是之前"很丑"的真正原因，不是配色/间距
+   问题。改成 position:fixed 覆盖层，默认滑出屏幕外，点汉堡菜单再滑入 */
+.menu-btn { display:none; }
+@media (max-width:860px) {
+  .menu-btn { display:flex; align-items:center; justify-content:center; width:38px; height:38px;
+              border-radius:10px; background:var(--card); border:1px solid var(--border);
+              color:var(--text-dim); cursor:pointer; font-size:16px; flex-shrink:0; }
+  .sidebar { position:fixed; left:0; top:0; bottom:0; z-index:250; width:240px;
+             transform:translateX(-100%); transition:transform .25s ease; box-shadow:var(--shadow); }
+  .sidebar.open { transform:translateX(0); }
+  #sidebarMask { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:240; }
+  #sidebarMask.show { display:block; }
+  .topbar h1 { font-size:15px; }
+  .topbar { padding:0 14px; gap:10px; }
+  .page-container { padding:16px 14px 30px; }
+  .clock { display:none; }   /* 窄屏幕空间紧张，时钟不是刚需信息，先让位 */
+}
+
+.btns { display:flex; flex-wrap:wrap; gap:10px; }
+button { background:var(--card-hover); color:var(--text); border:1px solid var(--border); border-radius:3px;
+         padding:10px 18px; font-size:14px; cursor:pointer; transition:filter .15s,background .15s; font-weight:500;
+         clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
+button:hover { filter:brightness(1.15); }
+button:active { transform:translateY(1px); }
+button:disabled { opacity:.5; cursor:not-allowed; }
+button.primary { background:var(--accent); color:#04140d; border-color:var(--accent); font-weight:700; }
+button.danger { background:var(--danger-bg); border-color:var(--danger); color:var(--danger); }
+button.ghost { background:transparent; }
+input[type=range] { width:220px; vertical-align:middle; accent-color:var(--accent); }
+.row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+/* password 一定要一起列进来。漏掉的话密码框用的是浏览器默认样式——
+   在这套深色界面里就是一个刺眼的白底框，跟旁边的输入框完全不是一套东西。
+   之前设置页的 APISecret 和登录页的密码框都是这个毛病。 */
+input[type=text], input[type=number], input[type=password], select {
+  background:rgba(5,14,30,.6); border:1px solid var(--border); border-radius:3px; color:var(--text);
+  padding:9px 11px; font-size:13px; font-family:inherit;
+}
+input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, select:focus {
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 2px rgba(53,214,255,.14);
+}
+/* Chrome 的自动填充会用 !important 强行盖掉背景色，普通规则拦不住它。
+   唯一可行的办法是用一个足够长的内阴影把整个框填满，再单独指定文字颜色
+   （-webkit-text-fill-color，普通的 color 同样会被盖掉）。
+   这不是什么优雅写法，但它是这个问题目前唯一的解 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow:0 0 0 60px #0a1424 inset !important;
+  -webkit-text-fill-color:var(--text) !important;
+  caret-color:var(--text);
+  transition:background-color 100000s ease 0s;   /* 拖住它的背景色过渡动画 */
+}
+.field-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+.field-row input[type=text] { flex:1; min-width:200px; }
+.field { margin-bottom:16px; }
+.field label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; }
+
+.canvas-wrap { width:100%; }
+canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
+#map { height:260px; border-radius:10px; z-index:1; }
+.log { max-height:130px; overflow-y:auto; font-size:12px; color:var(--text-dim); background:var(--bg);
+       border-radius:9px; padding:9px; margin-top:10px; font-family:Consolas,monospace; }
+.status-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
+.on { background:var(--accent); box-shadow:0 0 6px var(--accent); } .off { background:var(--text-faint); }
+.progress-wrap { background:var(--bg); border-radius:6px; height:10px; overflow:hidden; margin:10px 0 6px; }
+.progress-bar { height:100%; width:0%; background:linear-gradient(90deg,var(--accent-dim),var(--accent)); transition:width .3s; }
+.ota-status { font-size:13px; color:var(--text-dim); }
+.ota-status.ok { color:var(--accent); } .ota-status.fail { color:var(--danger); }
+.tag { display:inline-block; font-size:11px; padding:2px 9px; border-radius:12px; font-weight:600; }
+.tag.warn { background:var(--warn-bg); color:var(--warn); }
+.tag.danger { background:var(--danger-bg); color:var(--danger); }
+.tag.ok { background:var(--ok-bg); color:var(--accent); }
+.switch-row { display:flex; align-items:center; justify-content:space-between; padding:12px 0;
+              border-bottom:1px solid var(--border); }
+.switch-row:last-child { border-bottom:none; }
+.switch-row .t { font-size:13px; } .switch-row .d { font-size:11px; color:var(--text-faint); margin-top:2px; }
+.switch { position:relative; width:44px; height:24px; background:var(--border); border-radius:12px; cursor:pointer;
+          transition:background .2s; flex-shrink:0; }
+.switch.on { background:var(--accent); }
+.switch::after { content:''; position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%;
+                 background:#fff; transition:left .2s; }
+.switch.on::after { left:22px; }
+
+/* ---------- 健康度环形 + 姿态仪表 ---------- */
+.health-wrap { display:flex; align-items:center; gap:20px; }
+.health-ring { width:96px; height:96px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+               background:conic-gradient(var(--accent) calc(var(--pct,100)*1%), var(--border) 0); flex-shrink:0; }
+.health-ring::before { content:''; position:absolute; }
+.health-inner { width:76px; height:76px; border-radius:50%; background:var(--card); display:flex;
+                flex-direction:column; align-items:center; justify-content:center; }
+.health-inner b { font-size:22px; } .health-inner span { font-size:10px; color:var(--text-faint); }
+.health-text .t { font-size:14px; font-weight:700; margin-bottom:4px; }
+.health-text .d { font-size:12px; color:var(--text-dim); line-height:1.6; }
+
+.horizon-wrap { width:100%; height:190px; border-radius:10px; overflow:hidden; position:relative; background:#000; }
+.horizon-ball { position:absolute; inset:0; }
+.horizon-sky { position:absolute; left:-50%; right:-50%; top:-150%; height:200%;
+               background:linear-gradient(to bottom, #1b4a8a 45%, #123 46%, #2a1f10 46%, #6b4a1f 55%);
+               transform-origin:center 75%; transition:transform .15s linear; }
+.horizon-crosshair { position:absolute; left:50%; top:50%; width:70px; height:2px; background:var(--accent);
+                      transform:translate(-50%,-50%); box-shadow:0 0 6px var(--accent); }
+.horizon-crosshair::before, .horizon-crosshair::after { content:''; position:absolute; width:2px; height:14px;
+    background:var(--accent); top:-6px; }
+.horizon-crosshair::before { left:0; } .horizon-crosshair::after { right:0; }
+.compass { position:absolute; right:12px; top:12px; width:56px; height:56px; border-radius:50%;
+           background:rgba(10,14,20,.6); border:1px solid rgba(255,255,255,.15);
+           display:flex; align-items:center; justify-content:center; }
+.compass-needle { width:2px; height:22px; background:var(--warn); transform-origin:bottom center;
+                   transition:transform .15s linear; }
+.horizon-label { position:absolute; left:10px; bottom:8px; font-size:11px; color:#cfe3ff; font-family:Consolas,monospace; }
+
+/* ============================================================
+   数据可视化大屏：仪表盘首页专属视觉系统。设备控制/OTA/设置这些表单式
+   操作页面不套这套（填表单本身不适合"大屏"范式），但沿用同一套发光
+   配色，风格不会脱节。
+   ============================================================ */
+.dv-shell { position:relative; }
+.dv-bg-grid { position:absolute; inset:-22px -26px auto; height:600px; pointer-events:none; opacity:.35;
+  background-image:
+    linear-gradient(rgba(61,220,151,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61,220,151,.05) 1px, transparent 1px);
+  background-size:34px 34px; -webkit-mask-image:linear-gradient(to bottom, #000, transparent);
+          mask-image:linear-gradient(to bottom, #000, transparent); }
+
+.dv-header { position:relative; text-align:center; padding:2px 0 22px; }
+.dv-header::before, .dv-header::after { content:''; position:absolute; top:16px; width:28%; height:1px;
+  background:linear-gradient(90deg, transparent, var(--accent), transparent); }
+.dv-header::before { left:2%; } .dv-header::after { right:2%; }
+.dv-title { font-size:21px; font-weight:800; letter-spacing:7px; color:var(--text); margin:0;
+  text-shadow:0 0 14px rgba(61,220,151,.55), 0 0 34px rgba(61,220,151,.22); }
+.dv-title b { color:var(--accent); }
+.dv-subtitle { font-size:11px; color:var(--text-faint); letter-spacing:3px; margin-top:6px;
+               text-transform:uppercase; }
+
+.dv-grid { display:grid; grid-template-columns:1fr 1.5fr 1fr; gap:16px; align-items:start; }
+@media (max-width:1300px) { .dv-grid { grid-template-columns:1fr 1fr; } .dv-grid>.dv-col:last-child{grid-column:span 2;} }
+@media (max-width:900px) { .dv-grid { grid-template-columns:1fr; } .dv-grid>.dv-col:last-child{grid-column:span 1;} }
+.dv-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
+
+.dv-panel { position:relative; background:linear-gradient(180deg, rgba(20,27,40,.92), rgba(13,18,28,.92));
+  border:1px solid rgba(61,220,151,.18); border-radius:6px; padding:16px 18px 18px;
+  box-shadow:inset 0 0 40px rgba(0,0,0,.35); }
+[data-theme="light"] .dv-panel { background:linear-gradient(180deg, #fff, #f7fafc);
+  border-color:rgba(14,164,114,.25); box-shadow:inset 0 0 24px rgba(30,40,60,.05); }
+.dv-panel .corner { position:absolute; width:13px; height:13px; border:2px solid var(--accent); opacity:.8; }
+.dv-panel .corner.tl { top:-1px; left:-1px; border-right:none; border-bottom:none; }
+.dv-panel .corner.tr { top:-1px; right:-1px; border-left:none; border-bottom:none; }
+.dv-panel .corner.bl { bottom:-1px; left:-1px; border-right:none; border-top:none; }
+.dv-panel .corner.br { bottom:-1px; right:-1px; border-left:none; border-top:none; }
+.dv-panel-title { font-size:12.5px; font-weight:700; letter-spacing:2.5px; color:var(--accent);
+  display:flex; align-items:center; gap:8px; margin-bottom:14px; text-transform:uppercase; flex-shrink:0; }
+.dv-panel-title::before { content:''; width:3px; height:13px; background:var(--accent);
+  box-shadow:0 0 8px var(--accent); flex-shrink:0; }
+.dv-panel-title .hint { margin-left:auto; font-size:10.5px; color:var(--text-faint); letter-spacing:0; text-transform:none; font-weight:400; }
+
+/* 圆环仪表盘：替代原来单纯的数字卡片，视觉上更有"仪表"感 */
+.dv-gauges { display:grid; grid-template-columns:1fr 1fr; gap:16px 10px; }
+.dv-gauge { text-align:center; }
+.dv-gauge-ring { width:84px; height:84px; margin:0 auto 8px; border-radius:50%; position:relative;
+  background:conic-gradient(var(--accent) calc(var(--pct,0)*1%), rgba(255,255,255,.07) 0);
+  display:flex; align-items:center; justify-content:center;
+  filter:drop-shadow(0 0 7px rgba(61,220,151,.45)); transition:background 1s ease; }
+.dv-gauge-ring.warn { background:conic-gradient(var(--warn) calc(var(--pct,0)*1%), rgba(255,255,255,.07) 0);
+  filter:drop-shadow(0 0 7px rgba(255,180,84,.45)); }
+.dv-gauge-ring.danger { background:conic-gradient(var(--danger) calc(var(--pct,0)*1%), rgba(255,255,255,.07) 0);
+  filter:drop-shadow(0 0 7px rgba(255,84,112,.45)); }
+/* 传感器失联：环形去掉进度和辉光，只留一圈虚线灰边——视觉上明确地
+   "退场"，跟正常/警告/危险三种有色状态区分开。数值本身也调暗并加文字标记，
+   见 .stale-tag。这里刻意不用红色：红色在这套界面里代表"数值超过阈值"，
+   而失联是另一回事——数据本身不可信，不是数据超标 */
+.dv-gauge-ring.stale { background:none; border:2px dashed var(--border);
+  filter:none; opacity:.72; }
+.dv-gauge-ring.stale .dv-gauge-val { color:var(--text-faint); }
+.stale-tag { display:block; font-size:9px; font-weight:600; letter-spacing:.5px;
+  color:var(--warn); margin-top:1px; }
+.dv-gauge-ring::before { content:''; position:absolute; inset:7px; border-radius:50%; background:var(--bg-elevated); }
+.dv-gauge-val { position:relative; font-size:17px; font-weight:800; color:var(--text); font-variant-numeric:tabular-nums; }
+.dv-gauge-val .u { font-size:10px; color:var(--text-faint); font-weight:400; }
+.dv-gauge-label { font-size:11px; color:var(--text-dim); margin-top:6px; letter-spacing:1px; }
+
+/* 中列顶部：核心 KPI 大字，一眼能看出总体状态 */
+.dv-kpi-row { display:flex; justify-content:space-around; text-align:center; }
+.dv-kpi-row + .dv-kpi-row { margin-top:14px; }
+.dv-kpi b { display:block; font-size:32px; font-weight:800; color:var(--accent);
+  text-shadow:0 0 18px rgba(61,220,151,.5); font-variant-numeric:tabular-nums; line-height:1.2; }
+.dv-kpi span { font-size:10.5px; color:var(--text-faint); letter-spacing:1.5px; text-transform:uppercase; }
+
+.dv-map-wrap { height:280px; border-radius:6px; overflow:hidden; border:1px solid rgba(61,220,151,.15); }
+.dv-video-wrap img { width:100%; border-radius:4px; background:#000; display:block; min-height:150px; }
+
+/* 迷你告警滚动条：右列用，比完整告警中心页更紧凑 */
+.dv-alert-mini { display:flex; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); font-size:12px; }
+.dv-alert-mini:last-child { border-bottom:none; }
+.dv-alert-mini .dot { width:6px; height:6px; border-radius:50%; margin-top:5px; flex-shrink:0; }
+.dv-alert-mini.warn .dot { background:var(--warn); box-shadow:0 0 5px var(--warn); }
+.dv-alert-mini.danger .dot { background:var(--danger); box-shadow:0 0 5px var(--danger); }
+.dv-alert-mini .body { min-width:0; }
+.dv-alert-mini .t { color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dv-alert-mini .m { color:var(--text-faint); font-size:11px; margin-top:1px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ============================================================
+   全屏数据大屏
+   大屏不是"后台里的一个页面"，它就是整块屏幕：没有侧边导航、没有面包屑，
+   顶部一条自己的标题栏，下面三列面板直接铺满。之前把它塞在
+   侧边栏+顶栏的外壳里，可用高度先被砍掉一大块，再硬塞七块面板，
+   结果就是全被压扁。这里直接 fixed 覆盖整个视口，把空间拿回来。
+   ============================================================ */
+@media (min-width:901px) {
+  /* 大屏专属 token。之前字号有 10 种、颜色有 12 种，全是随手写的，
+     元素之间没有统一节奏——这才是"粗制滥造"的真正来源，不是装饰不够。
+     这里收敛成 4 级字号 + 一套配色，下面所有规则只准引用这些变量 */
+  #page-dashboard.active {
+    --f-title:22px;   /* 大屏主标题 */
+    --f-panel:14px;   /* 面板标题 */
+    --f-num:16px;     /* 行内数值 */
+    --f-body:12px;    /* 正文 */
+    --f-label:11px;   /* 弱标签 */
+
+    --c-text:#e8f2ff;
+    --c-dim:#8ab0dc;
+    --c-faint:#5b7ba6;
+    --c-cyan:#35d6ff;
+    --c-blue:#4d9fff;
+    --c-warn:#ffab3d;
+    --c-danger:#ff4d6d;
+    --c-line:rgba(77,159,255,.24);
+    --c-line-soft:rgba(77,159,255,.12);
+
+    /* 数字统一用 DIN 风格：Bahnschrift 是 Windows 自带的，
+       没有的话退到等宽，保证位数变化时不跳动 */
+    --f-mono:'Bahnschrift','DIN Alternate','Segoe UI Variable Display',Consolas,monospace;
+
+    position:fixed; inset:0; z-index:100; display:flex; flex-direction:column;
+    background:
+      radial-gradient(ellipse at 50% 0%, #10305e 0%, transparent 55%),
+      radial-gradient(ellipse at 50% 100%, #0a2244 0%, transparent 50%),
+      #050b18;
+    padding:0; animation:none;
+    font-family:'HarmonyOS Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  }
+  /* 背景科技纹理：细网格 + 顶部一层扫描光带，纯 CSS，不额外加图片请求 */
+  #page-dashboard.active::before {
+    content:''; position:absolute; inset:0; pointer-events:none; opacity:.55;
+    background-image:
+      linear-gradient(rgba(90,169,255,.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(90,169,255,.055) 1px, transparent 1px);
+    background-size:38px 38px;
+    -webkit-mask-image:radial-gradient(ellipse at 50% 40%, #000 30%, transparent 85%);
+            mask-image:radial-gradient(ellipse at 50% 40%, #000 30%, transparent 85%);
+  }
+  /* 外框左右留白 24px：原来是 14px，跟列间距(12px)几乎一样大，整块画面
+     等于贴着屏幕边缘，而右列的数值又是右对齐的，视觉上就像被切掉了一截。
+     外留白必须明显大于内间距，画面才"收得住"。 */
+  #page-dashboard.active .dv-shell { flex:1; min-height:0; display:flex; flex-direction:column;
+    padding:0 24px 14px; position:relative; z-index:1; }
+  #page-dashboard.active .dv-bg-grid { display:none; }   /* 换成上面那层蓝色纹理 */
+
+  /* ---- 顶部标题栏：左时间 / 中标题 / 右状态，两侧切角装饰 ---- */
+  .dv-topbar { flex-shrink:0; height:64px; display:flex; align-items:center; gap:16px;
+    /* 底色要通栏出血，所以负 margin 抵消 shell 的 padding；但 padding 必须
+       跟 shell 的留白同值(24px)，否则顶栏里的按钮和下方面板边缘对不齐 */
+    padding:0 24px; margin:0 -24px 12px; position:relative;
+    background:linear-gradient(180deg, rgba(28,86,160,.55), rgba(8,22,46,0)); }
+  /* 底边不是一条直线：中间亮、两端淡出，配合标题的发光形成"指挥中心"那种压顶感 */
+  .dv-topbar::before { content:''; position:absolute; left:0; right:0; bottom:0; height:1px;
+    background:linear-gradient(90deg, transparent, rgba(90,169,255,.75) 30%, #7fc4ff 50%, rgba(90,169,255,.75) 70%, transparent); }
+  .dv-topbar::after { content:''; position:absolute; left:50%; bottom:0; width:340px; height:3px;
+    transform:translateX(-50%); background:linear-gradient(90deg, transparent, #5aa9ff, transparent);
+    filter:blur(1px); }
+  .dv-topbar .side { flex:1; display:flex; align-items:center; gap:12px; font-size:var(--f-body);
+    color:var(--c-dim); font-family:var(--f-mono); font-variant-numeric:tabular-nums; letter-spacing:.5px; }
+  .dv-topbar .side.right { justify-content:flex-end; }
+  .dv-screen-title { font-size:var(--f-title); font-weight:700; letter-spacing:8px; white-space:nowrap;
+    color:#fff; text-shadow:0 0 20px rgba(77,159,255,.6); padding:0 30px; position:relative; }
+  /* 标题两侧的菱形装饰 */
+  .dv-screen-title::before, .dv-screen-title::after { content:''; position:absolute; top:50%;
+    width:7px; height:7px; margin-top:-3px; background:var(--c-blue); transform:rotate(45deg);
+    box-shadow:0 0 8px var(--c-blue); }
+  .dv-screen-title::before { left:4px; }
+  .dv-screen-title::after { right:4px; }
+  /* 顶栏右侧的元素统一高度 28px、统一不换行——之前没写 nowrap，
+     "已连接 192.168.100.240" 会断成两行，把整条标题栏撑歪 */
+  .dv-topbar .side.right > * { height:28px; box-sizing:border-box; }
+  .dv-chip { display:flex; align-items:center; gap:6px; padding:0 12px; font-size:var(--f-body);
+    white-space:nowrap; line-height:1;
+    border:1px solid var(--c-line); background:rgba(20,60,110,.3); color:var(--c-text);
+    clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
+  .dv-chip .d { width:6px; height:6px; border-radius:50%; background:#3ddc97; box-shadow:0 0 6px #3ddc97; }
+  .dv-chip.off .d { background:var(--c-danger); box-shadow:0 0 6px var(--c-danger); }
+  /* 设备选择器：状态点 + 下拉合成一体，外观和 chip 一致，
+     不然一个原生 select 杵在那里跟整条标题栏格格不入 */
+  .dv-devbox { display:flex; align-items:center; gap:6px; padding:0 4px 0 12px;
+    white-space:nowrap;
+    border:1px solid var(--c-line); background:rgba(20,60,110,.3);
+    clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
+  .dv-devbox .d { width:6px; height:6px; border-radius:50%; flex-shrink:0;
+    background:#3ddc97; box-shadow:0 0 6px #3ddc97; }
+  .dv-devbox.off .d { background:var(--c-danger); box-shadow:0 0 6px var(--c-danger); }
+  .dv-select { background:transparent; color:var(--c-text); font-size:var(--f-body);
+    border:none; padding:0 4px; cursor:pointer; font-family:inherit; line-height:1; }
+  .dv-select:focus { outline:none; }
+  .dv-select option { background:#0d1e38; color:var(--c-text); }
+  .dv-chip.btn { cursor:pointer; }
+  .dv-chip.btn:hover { background:rgba(40,100,170,.5); color:#fff; }
+
+  /* ---- 三列主体：左右两列严格对称，各三块等高面板；
+         中列自上而下是 KPI 条 / 地图 / 摄像头 ----
+     左右都用 1fr 1fr 1fr，同一行的左右面板尺寸完全一致，
+     视觉上是对称的；之前左列 auto/1fr/auto、右列 auto/1fr/1.15fr，
+     两边高度参差，看着就不齐整。
+     行高一律 minmax(0,1fr)：不写 minmax(0,...) 的话 grid 行的最小尺寸
+     是 auto（按内容撑），内容一多就会把整列顶出容器、逼出滚动条。 */
+  #page-dashboard.active .dv-grid { flex:1; min-height:0; display:grid; gap:12px;
+    grid-template-columns:1fr 1.45fr 1fr; grid-template-rows:minmax(0,1fr); align-items:stretch; }
+  #page-dashboard.active .dv-grid > .dv-col:last-child { grid-column:auto; }
+  #page-dashboard.active .dv-col { min-height:0; display:grid; gap:12px; }
+  #page-dashboard.active .dv-col:nth-child(1),
+  #page-dashboard.active .dv-col:nth-child(3) {
+    grid-template-rows:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
+  }
+  /* 中列：KPI 条按内容定高（就一行数字，给弹性高度会白白撑大），
+     地图和摄像头平分剩下的空间 */
+  #page-dashboard.active .dv-col:nth-child(2) { grid-template-rows:auto minmax(0,1fr) minmax(0,1fr); }
+
+  /* ---- 面板：深蓝玻璃底 + 斜切标题条 ---- */
+  /* 面板做成半透明玻璃：底色压得很淡，让背景纹理透上来，靠边框和高光
+     区分层次。之前用接近实心的深蓝块，一块块糊在一起，很沉 */
+  #page-dashboard.active .dv-panel { min-height:0; display:flex; flex-direction:column;
+    padding:10px 14px 12px; border-radius:2px;
+    background:linear-gradient(180deg, rgba(38,96,170,.20), rgba(10,28,58,.34));
+    border:1px solid rgba(110,185,255,.30);
+    box-shadow:inset 0 1px 0 rgba(160,215,255,.22), 0 0 22px rgba(10,40,90,.35); }
+  #page-dashboard.active .dv-panel .corner { border-color:var(--c-blue); width:9px; height:9px; opacity:.85; }
+  /* 标题条：一条渐变底 + 底部分隔线。装饰只留这两样，堆多了反而显廉价 */
+  #page-dashboard.active .dv-panel-title { font-size:var(--f-panel); font-weight:600; letter-spacing:2px;
+    margin:-10px -14px 10px; padding:8px 12px 7px; color:var(--c-text); text-transform:none; position:relative;
+    background:linear-gradient(90deg, rgba(45,110,190,.35), transparent 70%); }
+  #page-dashboard.active .dv-panel-title::before { width:3px; height:12px; border:none; border-radius:1px;
+    background:var(--c-cyan); box-shadow:0 0 8px var(--c-cyan); }
+  #page-dashboard.active .dv-panel-title::after { content:''; position:absolute; left:0; right:0; bottom:0;
+    height:1px; background:linear-gradient(90deg, var(--c-line), transparent); }
+  #page-dashboard.active .dv-panel-title .hint { font-size:var(--f-label); color:var(--c-faint);
+    font-weight:400; letter-spacing:0; }
+
+  /* ---- 圆环仪表：大屏配色换成蓝青，密度更高 ---- */
+  #page-dashboard.active .dv-gauges { flex:1; min-height:0; align-content:center; gap:6px 6px; }
+  #page-dashboard.active .dv-gauge { position:relative; }
+  /* 环本体 64px，但它外面还挂着两层往外扩的东西：刻度环(::after 的负 inset)
+     和 drop-shadow 发光。视觉直径 ≈ 64+10+阴影，才刚好落在单元格里。
+     之前写 76px，加上这两层视觉上接近 105px，会顶出面板边缘 */
+  #page-dashboard.active .dv-gauge-ring { width:64px; height:64px; margin-bottom:6px;
+    background:conic-gradient(var(--c-cyan) calc(var(--pct,0)*1%), rgba(77,159,255,.14) 0);
+    filter:drop-shadow(0 0 8px rgba(53,214,255,.45)); }
+  #page-dashboard.active .dv-gauge-ring.warn {
+    background:conic-gradient(var(--c-warn) calc(var(--pct,0)*1%), rgba(77,159,255,.14) 0);
+    filter:drop-shadow(0 0 8px rgba(255,171,61,.45)); }
+  #page-dashboard.active .dv-gauge-ring.danger {
+    background:conic-gradient(var(--c-danger) calc(var(--pct,0)*1%), rgba(77,159,255,.14) 0);
+    filter:drop-shadow(0 0 8px rgba(255,77,109,.5)); }
+  #page-dashboard.active .dv-gauge-ring::before { inset:6px; background:#0a1a33; }
+  /* 环外一圈刻度：用 repeating-conic-gradient 画 60 根短刻度线，
+     再用 mask 只保留最外侧一圈，纯 CSS 做出仪表盘的刻度感 */
+  #page-dashboard.active .dv-gauge-ring::after {
+    content:''; position:absolute; inset:-5px; border-radius:50%; pointer-events:none;
+    background:repeating-conic-gradient(rgba(120,190,255,.42) 0deg 1deg, transparent 1deg 7.5deg);
+    -webkit-mask:radial-gradient(circle, transparent 0 93%, #000 93% 100%);
+            mask:radial-gradient(circle, transparent 0 93%, #000 93% 100%); }
+  #page-dashboard.active .dv-gauge-val { font-size:var(--f-num); color:var(--c-text);
+    font-family:var(--f-mono); font-weight:600; }
+  #page-dashboard.active .dv-gauge-val .u { font-size:var(--f-label); color:var(--c-faint); }
+  #page-dashboard.active .dv-gauge-label { font-size:var(--f-label); color:var(--c-dim); margin-top:0;
+    letter-spacing:1.5px; }
+
+  /* ---- KPI：中列顶部的一排关键指标 ---- */
+  .dv-kpi-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .dv-kpi-cell { text-align:center; padding:8px 4px; position:relative;
+    background:linear-gradient(180deg, rgba(30,90,160,.35), rgba(10,30,60,.2));
+    border:1px solid rgba(90,169,255,.22);
+    clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px); }
+  .dv-kpi-cell::before { content:''; position:absolute; left:0; top:10px; width:2px; height:calc(100% - 20px);
+    background:linear-gradient(180deg, transparent, var(--c-blue), transparent); }
+  .dv-kpi-cell b { display:block; font-size:26px; font-weight:600; color:var(--c-cyan); line-height:1.3;
+    font-variant-numeric:tabular-nums; text-shadow:0 0 14px rgba(53,214,255,.5);
+    font-family:var(--f-mono); letter-spacing:1px; }
+  .dv-kpi-cell span { font-size:var(--f-label); color:var(--c-dim); letter-spacing:1.5px; }
+
+  /* ---- 横向条形数据行：填满原来只有四个数字的空面板 ---- */
+  #page-dashboard.active .dv-bars { flex:1; min-height:0; display:flex; flex-direction:column;
+    justify-content:space-evenly; gap:6px; }
+  .dv-bar-row { display:flex; align-items:center; gap:10px; font-size:var(--f-body); }
+  .dv-bar-row .lbl { color:var(--c-dim); letter-spacing:1px; width:54px; flex-shrink:0; }
+  .dv-bar-row .bar { flex:1; height:6px; min-width:0; position:relative;
+    background:rgba(77,159,255,.1); border:1px solid var(--c-line-soft); overflow:hidden; }
+  .dv-bar-row .bar i { position:absolute; left:0; top:0; bottom:0; width:0;
+    background:linear-gradient(90deg, rgba(53,214,255,.45), var(--c-cyan));
+    box-shadow:0 0 8px rgba(53,214,255,.7); transition:width .5s ease; }
+  .dv-bar-row b { color:var(--c-text); font-size:var(--f-num); font-weight:600; min-width:46px;
+    text-align:right; font-family:var(--f-mono); font-variant-numeric:tabular-nums; }
+  .dv-bar-row .u { color:var(--c-faint); font-size:var(--f-label); width:28px; }
+
+  /* ---- 健康度下方的明细行，把右侧空白填掉 ---- */
+  #page-dashboard.active .dv-stat-list { flex-shrink:0; margin-top:10px; padding-top:8px;
+    border-top:1px solid var(--c-line-soft); display:flex; flex-direction:column; gap:6px; }
+  .dv-stat { display:flex; align-items:center; font-size:var(--f-body); }
+  .dv-stat span { color:var(--c-dim); letter-spacing:1px; }
+  .dv-stat b { margin-left:auto; color:var(--c-cyan); font-weight:600; font-family:var(--f-mono);
+    font-variant-numeric:tabular-nums; }
+  .dv-stat b.bad { color:var(--c-danger); }
+  .dv-stat b.warn { color:var(--c-warn); }
+
+  /* ---- 撑满剩余空间的内容容器 ---- */
+  #page-dashboard.active .dv-chart-wrap { flex:1; min-height:0; }
+  #page-dashboard.active .dv-chart-wrap canvas { width:100%; height:100%; background:transparent; }
+  #page-dashboard.active .dv-map-wrap { flex:1; min-height:0; height:auto; border-color:var(--c-line); }
+  #page-dashboard.active #gpsInfo { flex-shrink:0; color:var(--c-dim); font-size:var(--f-body); margin-top:8px; }
+  #page-dashboard.active .dv-video-wrap { flex:1; min-height:0; display:flex; position:relative;
+    border:1px solid var(--c-line); background:#020913; }
+  #page-dashboard.active .dv-video-wrap img { flex:1; min-height:0; width:100%; height:100%;
+    object-fit:contain; border-radius:0; }
+  #page-dashboard.active .horizon-wrap { flex:1; min-height:0; height:auto; }
+  #page-dashboard.active .health-wrap { flex:1; min-height:0; align-items:center; gap:14px; }
+  #page-dashboard.active .health-ring { width:78px; height:78px;
+    background:conic-gradient(var(--c-cyan) calc(var(--pct,100)*1%), rgba(77,159,255,.14) 0);
+    filter:drop-shadow(0 0 8px rgba(53,214,255,.4)); }
+  #page-dashboard.active .health-inner { width:62px; height:62px; background:#0a1a33; }
+  #page-dashboard.active .health-inner b { font-size:24px; color:var(--c-text);
+    font-family:var(--f-mono); font-weight:600; }
+  #page-dashboard.active .health-inner span { font-size:var(--f-label); color:var(--c-faint); }
+  #page-dashboard.active .health-text .t { color:var(--c-text); font-size:var(--f-panel); font-weight:600; }
+  #page-dashboard.active .health-text .d { color:var(--c-dim); font-size:var(--f-body); }
+
+  /* ---- 告警列表：撑满右列底部，超出时列表内部滚动，不影响整屏 ---- */
+  #page-dashboard.active #dvAlertMini { flex:1; min-height:0; overflow-y:auto; }
+  /* ---- 事件时间轴：一条竖轴串起所有事件，比平铺的告警列表更能表达
+         "什么时候发生了什么"，也是大屏里少有的纵向叙事元素 ---- */
+  .dv-timeline { position:relative; padding-left:16px; }
+  .dv-timeline::before { content:''; position:absolute; left:4px; top:4px; bottom:4px; width:1px;
+    background:linear-gradient(180deg, var(--c-line), var(--c-line-soft) 70%, transparent); }
+  #page-dashboard.active .dv-alert-mini { display:block; position:relative; border-bottom:none;
+    font-size:var(--f-body); padding:0 8px 12px 10px; margin:0; border-left:none;
+    background:none; }
+  /* 轴上的节点 */
+  #page-dashboard.active .dv-alert-mini .dot { position:absolute; left:-16px; top:4px;
+    width:7px; height:7px; margin:0; border-radius:50%; background:var(--c-blue);
+    box-shadow:0 0 6px var(--c-blue), 0 0 0 3px rgba(6,18,38,.9); }
+  #page-dashboard.active .dv-alert-mini.warn .dot { background:var(--c-warn); box-shadow:0 0 6px var(--c-warn), 0 0 0 3px rgba(6,18,38,.9); }
+  #page-dashboard.active .dv-alert-mini.danger .dot { background:var(--c-danger);
+    animation:dvPulse 1.2s ease-in-out infinite; }
+  @keyframes dvPulse { 0%,100%{ box-shadow:0 0 5px var(--c-danger), 0 0 0 3px rgba(6,18,38,.9); }
+                       50%{ box-shadow:0 0 13px var(--c-danger), 0 0 0 3px rgba(6,18,38,.9); } }
+  #page-dashboard.active .dv-alert-mini .body { display:flex; flex-direction:column; gap:2px; }
+  #page-dashboard.active .dv-alert-mini .t { color:var(--c-text); display:flex; align-items:baseline; gap:8px; }
+  #page-dashboard.active .dv-alert-mini .t em { margin-left:auto; font-style:normal;
+    font-family:var(--f-mono); font-size:var(--f-label); color:var(--c-faint); }
+  #page-dashboard.active .dv-alert-mini.warn .t { color:var(--c-warn); }
+  #page-dashboard.active .dv-alert-mini.danger .t { color:var(--c-danger); }
+  #page-dashboard.active .dv-alert-mini .m { color:var(--c-dim); font-size:var(--f-label); }
+
+  /* ---- KPI 卡片下挂的迷你柱状图 ---- */
+  .dv-kpi-cell { display:flex; flex-direction:column; }
+  .spark { width:100%; height:16px; margin-top:5px; display:block; }
+  #page-dashboard.active .empty-hint { color:var(--c-faint); font-size:var(--f-body); padding:16px 10px; }
+  #page-dashboard.active .horizon-label { font-size:var(--f-label); font-family:var(--f-mono); }
+}
+
+/* 手机端不套全屏大屏那一套：屏幕太窄，硬塞一屏只会更难看，
+   保持原来的侧边栏外壳 + 纵向滚动 */
+@media (max-width:900px) {
+  .dv-topbar { display:none; }
+  .dv-kpi-strip { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .dv-kpi-cell { text-align:center; padding:10px 4px; background:var(--card);
+    border:1px solid var(--border); border-radius:10px; }
+  .dv-kpi-cell b { display:block; font-size:22px; font-weight:800; color:var(--accent); }
+  .dv-kpi-cell span { font-size:11px; color:var(--text-dim); }
+  .dv-chart-wrap { height:150px; }
+  .dv-chart-wrap canvas { width:100%; height:100%; }
+}
+
+/* ---------- Toast ---------- */
+#toastContainer { position:fixed; top:18px; right:18px; z-index:300; display:flex; flex-direction:column; gap:10px; }
+.toast { min-width:260px; max-width:340px; background:var(--card); border:1px solid var(--border);
+         border-left:4px solid var(--accent2); border-radius:10px; padding:12px 14px; box-shadow:var(--shadow);
+         animation:toastIn .25s ease; }
+.toast.warn { border-left-color:var(--warn); } .toast.danger { border-left-color:var(--danger); }
+.toast.success { border-left-color:var(--accent); }
+.toast .tt { font-size:13px; font-weight:700; margin-bottom:2px; }
+.toast .tm { font-size:12px; color:var(--text-dim); }
+.toast.closing { animation:toastOut .2s ease forwards; }
+@keyframes toastIn { from{opacity:0; transform:translateX(30px);} to{opacity:1; transform:none;} }
+@keyframes toastOut { to{opacity:0; transform:translateX(30px);} }
+
+/* ---------- 远程屏幕 ---------- */
+.scr-wrap { position:relative; background:#000; border:1px solid var(--border);
+  border-radius:3px; overflow:hidden; display:flex; align-items:center; justify-content:center;
+  min-height:320px; }
+/* 光标用 pointer 而不是 crosshair：这里的语义是"点它就等于点板子的屏幕"，
+   手型比十字准星更贴切，视觉上也干净 */
+#scrCanvas { max-width:100%; height:auto; display:block; cursor:pointer;
+  /* 全分辨率 JPEG 时按原尺寸显示更清楚；只有降采样兜底那条路径才需要
+     pixelated（放大时不做平滑，免得文字糊成一团） */
+  image-rendering:auto; }
+#scrCanvas.readonly { cursor:default; }
+.scr-idle { position:absolute; color:var(--text-faint); font-size:13px; }
+
+/* ---------- 自定义文件选择 ----------
+   input 用 opacity:0 + 绝对定位藏起来，而不是 display:none——后者会把它从
+   无障碍树里摘掉，键盘 Tab 再也走不到，用读屏软件的人直接失去这个功能。
+   保留在原地只是看不见，焦点和键盘操作全都正常。 */
+.file-input-hidden { position:absolute; width:1px; height:1px; opacity:0;
+  overflow:hidden; clip:rect(0 0 0 0); }
+.file-btn { display:inline-flex; align-items:center; gap:7px; cursor:pointer;
+  background:rgba(77,159,255,.1); border:1px solid var(--c-line-soft, var(--border));
+  color:var(--accent-2, var(--accent)); border-radius:3px; padding:9px 14px;
+  font-size:13px; font-weight:600; transition:background .15s, border-color .15s; }
+.file-btn:hover { background:rgba(77,159,255,.18); }
+/* input 获得焦点时给 label 一个可见的焦点环——藏起来的 input 自己看不见，
+   不这么做的话键盘用户完全不知道焦点在哪 */
+.file-input-hidden:focus-visible + .file-btn { outline:2px solid var(--accent);
+  outline-offset:2px; }
+.file-name { font-size:12.5px; color:var(--text-faint); max-width:280px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file-name.has { color:var(--text-dim); }
+
+/* ---------- 命令回执 ----------
+   四种状态用颜色区分，但主要靠文字说话：颜色是辅助，色觉障碍的人也得能用。
+   等宽数字（tabular-nums）让时间和毫秒数竖着对齐，扫一眼就能比较 */
+.cmd-log { display:flex; flex-direction:column; gap:1px; }
+.cmd-row { display:flex; align-items:center; gap:12px; padding:9px 12px;
+  border-left:2px solid var(--border); background:rgba(255,255,255,.014);
+  font-size:12.5px; transition:background .15s; }
+.cmd-row:hover { background:rgba(255,255,255,.035); }
+.cmd-row .tm { color:var(--text-faint); font-variant-numeric:tabular-nums;
+  font-family:Consolas, monospace; font-size:11.5px; }
+.cmd-row .lb { color:var(--text); font-weight:600; flex:1; }
+.cmd-row .st { color:var(--text-dim); font-size:11.5px; }
+.cmd-row .st em { font-style:normal; margin-left:8px; color:var(--text-faint);
+  font-variant-numeric:tabular-nums; font-family:Consolas, monospace; }
+.cmd-row.pending { border-left-color:var(--text-faint); }
+.cmd-row.pending .st { color:var(--text-faint); }
+.cmd-row.ok      { border-left-color:var(--accent); }
+.cmd-row.ok .st  { color:var(--accent); }
+.cmd-row.fail    { border-left-color:var(--danger); background:rgba(255,84,112,.05); }
+.cmd-row.fail .st{ color:var(--danger); font-weight:600; }
+.cmd-row.sent    { border-left-color:var(--c-line, var(--border)); }
+
+/* ---------- 机器人管理列表 ---------- */
+.dev-row { display:flex; align-items:center; gap:12px; padding:12px 14px; margin-bottom:8px;
+  background:linear-gradient(90deg, rgba(77,159,255,.07), transparent);
+  border:1px solid var(--border); border-radius:3px;
+  clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px); }
+.dev-row.current { border-color:var(--accent);
+  background:linear-gradient(90deg, rgba(53,214,255,.14), transparent); }
+.dev-row .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.dev-row .dot.on { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+.dev-row .dot.off { background:var(--text-faint); }
+.dev-row .info { flex:1; min-width:0; }
+.dev-row .nm { font-size:14px; font-weight:600; color:var(--text); }
+.dev-row .nm em { font-style:normal; font-size:11px; color:var(--accent); margin-left:6px; }
+.dev-row .sub { font-size:11px; color:var(--text-faint); margin-top:3px; }
+.dev-row .ops { display:flex; gap:8px; flex-shrink:0; }
+.dev-row .ops button { padding:6px 12px; font-size:12px; }
+/* 固件组下面的实际文件明细 */
+.fw-file { font-size:11px; color:var(--text-faint); margin-top:5px;
+  font-family:Consolas,monospace; }
+.fw-file span { color:var(--text-faint); opacity:.75; margin-left:8px; }
+.fw-file b { color:var(--accent); font-weight:600; margin-left:8px; }
+.fw-file.fresh { color:var(--text-dim); }
+
+/* ---------- 告警中心：概览 KPI + 阈值配置 ---------- */
+.alert-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:14px; margin-bottom:18px; }
+.akpi { background:linear-gradient(180deg, rgba(38,96,170,.16), rgba(10,28,58,.3));
+  border:1px solid var(--border); padding:16px 18px;
+  clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
+  border-left:3px solid var(--accent); }
+.akpi.danger { border-left-color:var(--danger); }
+.akpi.warn { border-left-color:var(--warn); }
+.akpi b { display:block; font-size:28px; font-weight:700; color:var(--accent);
+  font-family:'Bahnschrift','DIN Alternate',Consolas,monospace; line-height:1.1; }
+.akpi.danger b { color:var(--danger); }
+.akpi.warn b { color:var(--warn); }
+.akpi span { display:block; font-size:12px; color:var(--text-dim); margin-top:5px; }
+.akpi i { display:block; font-style:normal; font-size:10.5px; color:var(--text-faint);
+  margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.th-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  gap:18px; margin-bottom:16px; }
+.th-item label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:7px; }
+.th-row { display:flex; align-items:center; gap:8px; }
+.th-row input { flex:1; min-width:0; }
+.th-unit { font-size:12px; color:var(--text-faint); }
+/* 当前实测值就摆在输入框下面，填阈值时有个参照，不用靠猜 */
+.th-now { font-size:11px; color:var(--text-faint); margin-top:6px; }
+.th-now b { color:var(--accent); font-family:Consolas,monospace; font-weight:600; }
+
+/* ---------- 告警列表 ---------- */
+.alert-item { display:flex; gap:12px; padding:12px; border-radius:10px; background:var(--bg); margin-bottom:8px;
+              border-left:3px solid var(--border); }
+.alert-item.warn { border-left-color:var(--warn); }
+.alert-item.danger { border-left-color:var(--danger); }
+.alert-item.info { border-left-color:var(--accent); }
+/* 告警等级用一个自绘的圆点，不用 🔴🟡🟢 这类 emoji。
+   emoji 在不同系统上是不同的字体、不同的造型（Windows 扁平、macOS 立体、
+   Linux 上可能压根没有），带光泽的彩色小球放在这套扁平的深色技术界面里
+   很跳戏，而且尺寸也不受 CSS 控制。用 box-shadow 做一圈同色光晕，
+   跟大屏那边的 .dv-alert-mini .dot 是同一套视觉语言。 */
+.alert-item .ic { width:9px; height:9px; border-radius:50%; margin-top:5px; flex:0 0 auto;
+  background:var(--text-faint); box-shadow:0 0 0 3px rgba(138,148,166,.14); }
+.alert-item.danger .ic { background:var(--danger); box-shadow:0 0 0 3px rgba(255,84,112,.16); }
+.alert-item.warn   .ic { background:var(--warn);   box-shadow:0 0 0 3px rgba(255,180,84,.16); }
+.alert-item.info   .ic { background:var(--accent); box-shadow:0 0 0 3px rgba(61,220,151,.16); }
+.alert-item .body { flex:1; }
+.alert-item .t { font-size:13px; font-weight:600; }
+.alert-item .m { font-size:12px; color:var(--text-dim); margin-top:2px; }
+.alert-item .ts { font-size:11px; color:var(--text-faint); white-space:nowrap; }
+.empty-hint { text-align:center; padding:40px 10px; color:var(--text-faint); font-size:13px; }
+
+/* ---------- 空状态 ----------
+   "还没有数据"是这套界面上出现频率最高的状态之一（没接 GPS 模块、设备离线、
+   还没产生告警），却一直是最没设计过的地方：视频那个 <img> 没有 src 时浏览器
+   会画一个碎图图标，地图面板则是一整片纯黑加一行小字。
+   碎图尤其糟——它是"页面出错了"的通用信号，而这里其实一切正常，只是没设备。
+   统一成"图标 + 一句状态 + 一句解释"：让人一眼看出是没数据，而不是坏了。 */
+.dv-empty { position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:7px; text-align:center;
+  /* 斜纹叠在不透明底色上：底色保证盖得住下面的地图瓦片，
+     斜纹保留原来那点"这里是空的"的质感 */
+  background:repeating-linear-gradient(45deg, rgba(255,255,255,.012) 0 8px, transparent 8px 16px),
+             var(--bg-elevated, #0f1520);
+  pointer-events:none;
+  /* z-index 必须给，而且要压过 Leaflet。
+     Leaflet 的图层 pane 用的是 z-index 400~700，不设的话这个空状态会被
+     整个压在地图底下——界面上就变成"显示了一个看起来很确定的定位点"，
+     而实际上根本没接 GPS 模块，那个点是地图控件的默认视野。
+     这比没有空状态更糟：没有空状态只是信息缺失，显示一个假位置是误导。
+     （背景的处理见上面那段注释） */
+  z-index:800; }
+.dv-empty svg { opacity:.3; }
+.dv-empty b { font-size:12px; font-weight:600; color:var(--text-dim); letter-spacing:.5px; }
+.dv-empty span { font-size:10.5px; color:var(--text-faint); max-width:78%; line-height:1.5; }
+.dv-empty.hide { display:none; }
+</style>
+</head>
+<body data-theme="dark">
+
+<!-- ============ 登录层 ============ -->
+<!-- 登录页：左侧讲清楚这是什么系统、连的是什么，右侧才是表单。
+     原来只有一个居中的小卡片配渐变背景，看不出是干什么的系统 -->
+<div id="loginOverlay">
+  <div class="login-grid">
+    <div class="login-brand">
+      <div class="lb-tag">CAN BUS · EDGE GATEWAY · OTA</div>
+      <h1>巡检机器人<br><b>远程监控与运维平台</b></h1>
+      <p class="lb-desc">
+        STM32 多传感采集 → CAN 总线 → i.MX6ULL 边缘网关 → MQTT →
+        实时大屏 / 远程控制 / 固件 OTA
+      </p>
+      <div class="lb-specs">
+        <div><b>CAN</b><span>500 kbps</span></div>
+        <div><b>固件升级</b><span>UDS · A/B 双分区</span></div>
+        <div><b>安全接入</b><span>账号认证 + 视频 token</span></div>
+      </div>
+    </div>
+
+    <div class="login-form">
+      <div class="lf-head">
+        <div class="logo">EM</div>
+        <div>
+          <div class="lf-title">接入控制台</div>
+          <div class="lf-sub">连接 MQTT broker 后进入</div>
+        </div>
+      </div>
+
+      <label class="lf-label">Broker 地址</label>
+      <input id="inHost" placeholder="默认为当前站点地址" autocomplete="off">
+      <div class="lf-hint">服务器/VM 的地址，不是机器人的</div>
+
+      <label class="lf-label">账号</label>
+      <input id="inUser" placeholder="em" autocomplete="username">
+
+      <label class="lf-label">密码</label>
+      <input id="inPass" type="password" placeholder="••••••" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter') doLogin()">
+
+      <button class="primary" onclick="doLogin()">连接并进入</button>
+      <div class="login-err" id="loginErr"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 应用外壳 ============ -->
+<div id="appShell">
+  <div id="sidebarMask" onclick="toggleSidebar(false)"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="mark">EM</div>
+      <div><div class="name">EdgeMonitor</div><div class="sub">CONTROL CENTER</div></div>
+    </div>
+    <nav class="nav" id="navList">
+      <div class="nav-item active" data-page="dashboard"><span class="ic">&#9673;</span>仪表盘</div>
+      <div class="nav-item" data-page="control"><span class="ic">&#9881;</span>设备控制</div>
+      <div class="nav-item" data-page="history"><span class="ic">&#8776;</span>历史数据</div>
+      <div class="nav-item" data-page="alerts"><span class="ic">&#9888;</span>告警中心<span class="badge" id="navAlertBadge" style="display:none;">0</span></div>
+      <div class="nav-item" data-page="screen"><span class="ic">&#9635;</span>远程屏幕</div>
+      <div class="nav-item" data-page="ota"><span class="ic">&#8593;</span>OTA 升级</div>
+      <div class="nav-item" data-page="settings"><span class="ic">&#9776;</span>系统设置</div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-chip">
+        <div class="avatar" id="userAvatar">?</div>
+        <div><div class="uname" id="userName">--</div><div class="uhost" id="userHost">--</div></div>
+        <button class="logout-btn" title="登出" onclick="doLogout()">&#9211;</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="menu-btn" id="menuBtn" onclick="toggleSidebar()" title="菜单">&#9776;</span>
+      <h1 id="pageTitle">仪表盘</h1>
+      <span class="crumb" id="pageCrumb">实时总览</span>
+      <div class="spacer"></div>
+      <span class="clock" id="clock">--:--:--</span>
+      <button class="bell-btn" id="bellBtn" onclick="showPage('alerts')" title="告警中心">
+        &#128276;<span class="dot"></span>
+      </button>
+      <span class="conn-pill offline" id="conn"><span class="dot"></span><span id="connText">未连接</span></span>
+    </div>
+
+    <div class="page-container no-scroll" id="pageContainer">
+
+      <!-- ============ 页面：仪表盘（数据可视化大屏） ============ -->
+      <section class="page active" id="page-dashboard">
+        <div class="dv-shell">
+          <div class="dv-bg-grid"></div>
+
+          <!-- 大屏自己的标题栏，替代后台的侧边栏+顶栏 -->
+          <div class="dv-topbar">
+            <div class="side">
+              <span id="dvClock">--:--:--</span>
+              <span id="dvDate"></span>
+            </div>
+            <div class="dv-screen-title">远程监控数据大屏</div>
+            <div class="side right">
+              <!-- 两个状态是分开的：dvConn 是"大屏和 broker 通不通"，
+                   devState 是"机器人本身在不在线"。broker 在服务器上，
+                   前者正常而后者离线，恰恰是最需要被看见的情况 -->
+              <!-- 大屏↔broker 的连接。有绿点就代表"已连接"，不用再写四个字，
+                   右上角空间紧张，文字一多就换行 -->
+              <span class="dv-chip" id="dvConn" title="大屏与 broker 的连接">
+                <span class="d"></span><span id="dvConnText">未连接</span>
+              </span>
+              <!-- 设备状态点和切换下拉合成一个控件：原来拆成两个芯片，
+                   右上角一共挤了四样东西，高度还对不齐 -->
+              <span class="dv-devbox off" id="devState" title="当前查看的机器人">
+                <span class="d"></span>
+                <select class="dv-select" id="devSelect" onchange="switchDevice(this.value)">
+                  <option value="">暂无设备</option>
+                </select>
+              </span>
+              <span class="dv-chip btn" onclick="showPage('control')">控制台 →</span>
+            </div>
+          </div>
+
+          <div class="dv-grid">
+            <!-- 左列：环境监测仪表盘 + 小车运动状态 -->
+            <div class="dv-col">
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">环境监测</div>
+                <div class="dv-gauges">
+                  <div class="dv-gauge">
+                    <div class="dv-gauge-ring" id="gTemp" style="--pct:0;"><div class="dv-gauge-val" id="vTemp">--<span class="u">℃</span></div></div>
+                    <div class="dv-gauge-label">温度</div>
+                  </div>
+                  <div class="dv-gauge">
+                    <div class="dv-gauge-ring" id="gHumi" style="--pct:0;"><div class="dv-gauge-val" id="vHumi">--<span class="u">%</span></div></div>
+                    <div class="dv-gauge-label">湿度</div>
+                  </div>
+                  <div class="dv-gauge">
+                    <div class="dv-gauge-ring" id="gLight" style="--pct:0;"><div class="dv-gauge-val" id="vLight">--<span class="u">%</span></div></div>
+                    <div class="dv-gauge-label">光照</div>
+                  </div>
+                  <div class="dv-gauge">
+                    <div class="dv-gauge-ring" id="gDist" style="--pct:0;"><div class="dv-gauge-val" id="vDist">--<span class="u">cm</span></div></div>
+                    <div class="dv-gauge-label">障碍距离</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">温度 / 湿度趋势<span class="hint">近 60 次上报</span></div>
+                <div class="dv-chart-wrap"><canvas id="dvChart"></canvas></div>
+              </div>
+
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">小车运动状态<span class="hint" id="motorHint">待机</span></div>
+                <div class="dv-bars">
+                  <div class="dv-bar-row">
+                    <span class="lbl">左轮转速</span>
+                    <div class="bar"><i id="barRpmL"></i></div>
+                    <b id="vRpmL">--</b><span class="u">RPM</span>
+                  </div>
+                  <div class="dv-bar-row">
+                    <span class="lbl">右轮转速</span>
+                    <div class="bar"><i id="barRpmR"></i></div>
+                    <b id="vRpmR">--</b><span class="u">RPM</span>
+                  </div>
+                  <div class="dv-bar-row">
+                    <span class="lbl">左轮里程</span>
+                    <div class="bar"><i id="barOdoL"></i></div>
+                    <b id="vOdoL">--</b><span class="u">CM</span>
+                  </div>
+                  <div class="dv-bar-row">
+                    <span class="lbl">右轮里程</span>
+                    <div class="bar"><i id="barOdoR"></i></div>
+                    <b id="vOdoR">--</b><span class="u">CM</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 中列：关键指标条 + GPS 地图（主视觉）+ 实时视频 -->
+            <div class="dv-col">
+              <div class="dv-kpi-strip">
+                <div class="dv-kpi-cell"><b id="kpiUptime">00:00</b><span>运行时长</span>
+                  <canvas class="spark" id="sparkUptime"></canvas></div>
+                <div class="dv-kpi-cell"><b id="kpiFrames">0</b><span>数据帧数</span>
+                  <canvas class="spark" id="sparkFrames"></canvas></div>
+                <div class="dv-kpi-cell"><b id="kpiAlerts">0</b><span>累计告警</span>
+                  <canvas class="spark" id="sparkAlerts"></canvas></div>
+                <div class="dv-kpi-cell"><b id="kpiHealth">--</b><span>健康评分</span>
+                  <canvas class="spark" id="sparkHealth"></canvas></div>
+              </div>
+
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">设备定位<span class="hint">GPS 实时轨迹</span></div>
+                <div class="dv-map-wrap" style="position:relative;">
+                  <div id="map" style="height:100%;"></div>
+                  <div class="dv-empty" id="mapEmpty">
+                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 21s-7-6.2-7-11a7 7 0 1 1 14 0c0 4.8-7 11-7 11z"/>
+                      <circle cx="12" cy="10" r="2.4"/>
+                    </svg>
+                    <b>等待 GPS 定位</b>
+                    <span>未接入 GPS 模块，或模块尚未搜到星。收到首个有效定位后自动显示轨迹</span>
+                  </div>
+                </div>
+                <!-- 初始留空：上面的空状态已经把"在等定位"说清楚了，
+                     这里再写一行是重复。收到定位后由 updateGps() 填坐标 -->
+                <div id="gpsInfo"></div>
+              </div>
+
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">实时视频<span class="hint">MJPEG</span></div>
+                <div class="dv-video-wrap" style="position:relative;">
+                  <!-- 没有 src 的 <img> 会被浏览器画成碎图图标，那是"页面坏了"的
+                       信号，跟这里的真实情况（设备不在线）完全对不上。所以默认
+                       用 hidden 藏起来，由 applyVideoSource() 决定什么时候显示 -->
+                  <img id="stream" alt="" hidden>
+                  <div class="dv-empty" id="videoEmpty">
+                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="2.5" y="6" width="13" height="12" rx="2"/>
+                      <path d="M15.5 10.5 21.5 7v10l-6-3.5z"/>
+                    </svg>
+                    <b>视频未连接</b>
+                    <span>设备上线后自动接入其摄像头推流</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右列：系统健康度 + 姿态水平仪 + 实时告警 -->
+            <div class="dv-col">
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">系统健康度<span class="hint" id="healthHint">评估中…</span></div>
+                <div class="health-wrap">
+                  <div class="health-ring" id="healthRing" style="--pct:100;">
+                    <div class="health-inner"><b id="healthScore">--</b><span>/ 100</span></div>
+                  </div>
+                  <div class="health-text">
+                    <div class="t" id="healthTitle">等待数据…</div>
+                    <div class="d" id="healthDetail">尚未收到传感器上报</div>
+                  </div>
+                </div>
+                <div class="dv-stat-list">
+                  <div class="dv-stat"><span>链路状态</span><b id="hsLink">--</b></div>
+                  <div class="dv-stat"><span>生效告警</span><b id="hsAlerts">--</b></div>
+                  <div class="dv-stat"><span>上报间隔</span><b id="hsRate">--</b></div>
+                  <div class="dv-stat"><span>电池电压</span><b id="hsBatt">--</b></div>
+                </div>
+              </div>
+
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">姿态水平仪<span class="hint">俯仰 / 横滚 / 偏航</span></div>
+                <div class="horizon-wrap">
+                  <div class="horizon-ball"><div class="horizon-sky" id="horizonSky"></div></div>
+                  <div class="horizon-crosshair"></div>
+                  <div class="compass"><div class="compass-needle" id="compassNeedle"></div></div>
+                  <div class="horizon-label" id="horizonLabel">P 0.0°&nbsp; R 0.0°&nbsp; Y 0.0°</div>
+                </div>
+              </div>
+
+              <div class="dv-panel">
+                <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+                <div class="dv-panel-title">事件时间轴<span class="hint" style="cursor:pointer;" onclick="showPage('alerts')">查看全部 →</span></div>
+                <div id="dvAlertMini" class="dv-timeline" style="position:relative;">
+                  <div class="dv-empty" id="alertEmpty">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M20 6 9 17l-5-5"/>
+                    </svg>
+                    <b>运行正常</b>
+                    <span>没有触发任何告警。超过阈值或传感器失联时会在这里实时出现</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 页面：设备控制 ============ -->
+      <section class="page" id="page-control">
+        <div class="two-col">
+          <div>
+            <div class="section">
+              <div class="section-head"><h2>执行设备控制</h2></div>
+              <div class="btns">
+                <button id="ledBtn" onclick="toggleDev(1)">&#128161; LED：关</button>
+                <button id="buzzerBtn" onclick="toggleDev(2)">&#128276; 蜂鸣器：关</button>
+              </div>
+              <div style="margin-top:14px;font-size:13px;color:var(--text-dim);">
+                状态灯：
+                <span><span class="status-dot off" id="dotLed"></span>LED</span>
+                <span style="margin-left:14px;"><span class="status-dot off" id="dotBuzzer"></span>蜂鸣器</span>
+                <span style="margin-left:14px;"><span class="status-dot off" id="dotMotor"></span>电机</span>
+              </div>
+              <div class="log" id="log"></div>
+            </div>
+          </div>
+          <div>
+            <div class="section">
+              <div class="section-head"><h2>小车运动控制</h2></div>
+              <div class="row" style="margin-bottom:14px;">
+                <span style="font-size:13px;color:var(--text-dim);">速度</span>
+                <input type="range" id="speed" min="0" max="100" value="60">
+                <span id="speedVal" style="font-size:13px;color:var(--accent);font-weight:700;">60%</span>
+              </div>
+              <div class="btns">
+                <button onclick="carCmd(1)">▲ 前进</button>
+                <button onclick="carCmd(3)">▼ 后退</button>
+                <button onclick="carCmd(4)">◀ 左转</button>
+                <button onclick="carCmd(5)">▶ 右转</button>
+                <button class="danger" onclick="carCmd(2)">■ 紧急停止</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 命令回执：这一页原来只有几个按钮，点完就没有下文了。
+             按钮变色只能证明"消息发出去了"，证明不了设备真的执行了——
+             中间还隔着 MQTT、网关、CAN、STM32 四层。这里等设备把状态位
+             回传回来才判定成功，顺带量出整条链路的往返时延。 -->
+        <div class="section">
+          <div class="section-head">
+            <h2>命令回执</h2>
+            <span class="hint">等设备回传状态位才算确认，时延是浏览器→MQTT→网关→CAN→STM32→原路返回的往返值</span>
+          </div>
+          <div id="cmdLog" class="cmd-log"><div class="empty-hint">还没有下发过命令</div></div>
+        </div>
+      </section>
+
+      <!-- ============ 页面：历史数据 ============ -->
+      <section class="page" id="page-history">
+        <!-- 历史回看：数据来自服务器侧 history_logger 落的 SQLite，
+             跟上面那张"最近 60 点"的实时曲线不是一回事——实时曲线只在
+             浏览器内存里，刷新就没了 -->
+        <div class="section">
+          <div class="section-head">
+            <h2>历史回看</h2>
+            <span class="hint" id="histHint">从服务器历史库读取</span>
+          </div>
+          <div class="row" style="margin-bottom:14px;">
+            <select id="histMetric" onchange="loadHistory()">
+              <option value="temp">温度 ℃</option>
+              <option value="humi">湿度 %</option>
+              <option value="light">光照 %</option>
+              <option value="dist">障碍距离 cm</option>
+              <option value="pitch">俯仰角 °</option>
+              <option value="roll">横滚角 °</option>
+              <option value="yaw">偏航角 °</option>
+              <option value="rpm_l">左轮转速 RPM</option>
+              <option value="rpm_r">右轮转速 RPM</option>
+            </select>
+            <select id="histRange" onchange="loadHistory()">
+              <option value="1">最近 1 小时</option>
+              <option value="6" selected>最近 6 小时</option>
+              <option value="24">最近 24 小时</option>
+              <option value="168">最近 7 天</option>
+            </select>
+            <button onclick="loadHistory()">刷新</button>
+            <span class="hint" id="histStat"></span>
+          </div>
+          <div class="canvas-wrap"><canvas id="histChart"></canvas></div>
+        </div>
+
+        <div class="section">
+          <div class="section-head"><h2>实时曲线（温度 / 湿度）</h2><span class="hint">最近 60 个采样点，仅本次会话</span></div>
+          <div class="canvas-wrap"><canvas id="chart"></canvas></div>
+        </div>
+        <div class="section">
+          <div class="section-head"><h2>实时曲线（姿态角 俯仰/横滚/偏航）</h2></div>
+          <div class="canvas-wrap"><canvas id="chartImu"></canvas></div>
+        </div>
+        <div class="grid">
+          <div class="card"><div class="label">左轮累计里程</div><div class="value" id="statOdoL">--<span class="unit">cm</span></div></div>
+          <div class="card"><div class="label">右轮累计里程</div><div class="value" id="statOdoR">--<span class="unit">cm</span></div></div>
+          <div class="card"><div class="label">本次会话运行时长</div><div class="value" id="statUptime">00:00</div></div>
+          <div class="card"><div class="label">累计接收帧数</div><div class="value" id="statFrames">0</div></div>
+        </div>
+      </section>
+
+      <!-- ============ 页面：告警中心 ============ -->
+      <section class="page" id="page-alerts">
+        <!-- 概览：一眼看出"现在有没有事"，不用去翻列表数条数 -->
+        <div class="alert-kpis">
+          <div class="akpi" id="akpiActive"><b>0</b><span>当前生效</span><i>最近 5 分钟</i></div>
+          <div class="akpi danger" id="akpiDanger"><b>0</b><span>严重</span><i>本次会话</i></div>
+          <div class="akpi warn" id="akpiWarn"><b>0</b><span>警告</span><i>本次会话</i></div>
+          <div class="akpi" id="akpiLast"><b>--</b><span>最近告警</span><i id="akpiLastMsg">暂无</i></div>
+        </div>
+
+        <div class="section">
+          <div class="section-head">
+            <h2>告警阈值</h2><span class="hint">超出范围自动触发告警 + 提示音</span>
+          </div>
+          <!-- 每个阈值旁边显示当前实测值：不给参考的话，
+               填多少全靠猜，很容易设成一个天天误报或者永远不报的值 -->
+          <div class="th-grid">
+            <div class="th-item">
+              <label>温度上限</label>
+              <div class="th-row"><input type="number" id="thTempHigh" value="40"><span class="th-unit">℃</span></div>
+              <div class="th-now">当前 <b id="thNowTemp">--</b></div>
+            </div>
+            <div class="th-item">
+              <label>距离下限（碰撞预警）</label>
+              <div class="th-row"><input type="number" id="thDistLow" value="10"><span class="th-unit">cm</span></div>
+              <div class="th-now">当前 <b id="thNowDist">--</b></div>
+            </div>
+            <div class="th-item">
+              <label>湿度上限</label>
+              <div class="th-row"><input type="number" id="thHumiHigh" value="90"><span class="th-unit">%</span></div>
+              <div class="th-now">当前 <b id="thNowHumi">--</b></div>
+            </div>
+          </div>
+          <button class="primary" onclick="saveThresholds()">保存阈值</button>
+          <span class="hint" id="thSaved" style="margin-left:12px;"></span>
+        </div>
+
+        <div class="section">
+          <div class="section-head">
+            <h2>本次会话告警</h2>
+            <span class="hint">只在浏览器内存里，刷新即清空</span>
+            <button class="ghost" onclick="clearAlerts()">清空</button>
+          </div>
+          <div id="alertList"><div class="empty-hint">暂无告警，一切正常</div></div>
+        </div>
+        <!-- 历史事件来自服务器侧 history_logger 的 event_log 表，
+             跟上面那份内存告警是两回事：这里的记录跨会话、跨重启都在 -->
+        <div class="section">
+          <div class="section-head">
+            <h2>历史事件</h2>
+            <span class="hint" id="histEvtStat">来自服务器历史库</span>
+            <button class="ghost" onclick="loadHistoryEvents()">刷新</button>
+          </div>
+          <div id="histEventList"><div class="empty-hint">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ============ 页面：OTA 升级 ============ -->
+      <section class="page" id="page-ota">
+        <!-- 上传：浏览器直接把固件传到板子，省掉手动 scp 那一步。
+             A/B 双分区需要两份固件（链接地址不同，不能互换），
+             所以支持一次选多个文件 -->
+        <div class="section">
+          <div class="section-head">
+            <h2>上传固件到设备</h2>
+            <span class="hint">A/B 双分区需要 <b>_a.bin</b> 和 <b>_b.bin</b> 两份，可一次多选</span>
+          </div>
+          <div class="row" style="margin-bottom:12px;">
+            <!-- 原生 file 控件的按钮和"未选择任何文件"那段文字是浏览器画的，
+                 CSS 基本改不动，在这套全自定义的深色界面里非常突兀。
+                 标准做法：把它藏起来（不能用 display:none，那样键盘用户就
+                 完全够不着了），用一个 <label for> 代理点击——label 天然会把
+                 点击转发给关联的 input，不需要一行 JS。 -->
+            <input type="file" id="fwFiles" accept=".bin" multiple class="file-input-hidden">
+            <label class="file-btn" for="fwFiles">选择固件文件…</label>
+            <span class="file-name" id="fwFileName">未选择</span>
+            <button class="primary" id="fwUploadBtn" onclick="uploadFirmware()">上传</button>
+            <button class="ghost" onclick="loadFwList()">刷新列表</button>
+          </div>
+          <div class="progress-wrap"><div class="progress-bar" id="fwBar"></div></div>
+          <div class="ota-status" id="fwStatus">选择本地固件文件后点上传</div>
+          <div style="margin-top:14px;">
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">设备上已有的固件：</div>
+            <div id="fwList"><div class="empty-hint" style="padding:14px;">点「刷新列表」查看</div></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-head"><h2>执行升级</h2></div>
+          <div class="field-row">
+            <input type="text" id="otaPath" placeholder="固件基名，例如 atk_f103">
+            <button class="primary" id="otaBtn" onclick="startOta()">开始升级</button>
+          </div>
+          <div style="font-size:12px;color:var(--text-faint);margin:-4px 0 10px;">
+            A/B 模式填<b>基名</b>（如 <code>atk_f103</code>），工具会先问设备该写哪个槽，
+            再自动选 <code>atk_f103_a.bin</code> 或 <code>_b.bin</code>。
+            只填文件名，不支持带路径（网关会拒绝）。
+          </div>
+          <div class="progress-wrap"><div class="progress-bar" id="otaBar"></div></div>
+          <div class="ota-status" id="otaStatus">尚未开始</div>
+          <div class="log" id="otaLog"></div>
+        </div>
+      </section>
+
+      <!-- ============ 页面：系统设置 ============ -->
+      <!-- 远程屏幕：抓板子的 framebuffer 显示，点击注入回触摸屏。
+           板子跑的是 linuxfb 直出（没有 X server），VNC 那套用不了，
+           直接读 /dev/fb0 反而是最短路径 -->
+      <section class="page" id="page-screen">
+        <div class="section">
+          <div class="section-head">
+            <h2>远程屏幕</h2>
+            <span class="hint" id="scrHint">读取板子 framebuffer，点击画面可远程操作触摸屏</span>
+          </div>
+          <div class="row" style="margin-bottom:12px;">
+            <button class="primary" id="scrToggle" onclick="toggleScreenShare()">开始查看</button>
+            <select id="scrFps" onchange="restartScreenShare()">
+              <option value="150">~6 帧/秒（流畅）</option>
+              <option value="250" selected>4 帧/秒</option>
+              <option value="500">2 帧/秒</option>
+              <option value="1500">省流量</option>
+            </select>
+            <label class="row" style="gap:6px; font-size:13px; color:var(--text-dim);"
+                   title="勾选后：点击=点触摸屏，滚轮=在设备上滑动（此时滚轮不再滚动本网页）">
+              <input type="checkbox" id="scrClickable" checked> 允许点击/滑动操作
+            </label>
+            <span class="hint" id="scrStat"></span>
+          </div>
+          <div class="scr-wrap">
+            <canvas id="scrCanvas" onclick="onScreenClick(event)"></canvas>
+            <div class="dv-empty" id="scrIdle">
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2.5" y="4" width="19" height="13" rx="2"/>
+                <path d="M8.5 20.5h7M12 17v3.5"/>
+              </svg>
+              <b>尚未开始查看</b>
+              <span>点「开始查看」按选定帧率拉取板子的 framebuffer</span>
+            </div>
+          </div>
+          <div class="hint" style="margin-top:10px;">
+            板子有 libjpeg 时推全分辨率 JPEG，没有则自动退回降采样的 RGB565
+            原始数据（零依赖兜底）。<b>鼠标在画面内滚动 = 在设备上滑动</b>，
+            此时不会滚动本网页；想滚网页请把指针移出画面。
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <!-- 机器人管理：列表 = 自动发现 ∪ 手工登记。
+             自动发现来自 monitor/online/# 的 retained 消息；手工登记是为了
+             让"从没上线过/当前离线"的设备也能出现在列表里 -->
+        <div class="section">
+          <div class="section-head">
+            <h2>机器人管理</h2>
+            <span class="hint">上线过的设备会自动出现；离线设备可手工登记以便随时查看</span>
+          </div>
+          <div class="row" style="margin-bottom:14px; align-items:flex-end;">
+            <div class="field" style="margin-bottom:0;">
+              <label>设备 ID（要和板子上的 DEVICE_ID 一致）</label>
+              <input type="text" id="newDevId" placeholder="robot02">
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label>显示名称（可选）</label>
+              <input type="text" id="newDevName" placeholder="二号巡检车">
+            </div>
+            <button class="primary" onclick="onAddDevice()">添加机器人</button>
+          </div>
+          <div id="devAddErr" style="color:var(--danger); font-size:12px; min-height:16px; margin-bottom:8px;"></div>
+          <div id="deviceList"></div>
+        </div>
+
+        <!-- 语音助手密钥：在这里用电脑键盘填，通过 MQTT retained 消息下发到
+             设备，Qt 界面收到后存进本地配置。
+             这样做的两个原因：
+               1. 不把密钥写进源码——这是作品集，源码会分享出去，
+                  进了 git 历史就很难清干净
+               2. 6U 是触摸屏，用虚拟键盘戳几十位的密钥太痛苦 -->
+        <div class="section">
+          <div class="section-head">
+            <h2>语音助手密钥（讯飞开放平台）</h2>
+            <span class="hint">填好后下发到设备，设备重启也能自动恢复</span>
+          </div>
+          <div class="grid">
+            <div class="field"><label>APPID</label><input type="text" id="xfAppId" placeholder="8 位应用 ID"></div>
+            <div class="field"><label>APIKey</label><input type="text" id="xfApiKey" placeholder="32 位"></div>
+            <div class="field"><label>APISecret</label><input type="password" id="xfApiSecret" placeholder="32 位"></div>
+          </div>
+          <div class="grid">
+            <div class="field"><label>星火 Host</label><input type="text" id="xfSparkHost" value="spark-api.xf-yun.com"></div>
+            <!-- Path/Domain 必须跟讯飞控制台里实际开通的版本一致。填错的表现是
+                 握手返回 403 Forbidden——跟密钥错误的 401 是两码事：401 是签名没过，
+                 403 是签名没问题但这个 appid 没有该服务的权限。
+                 这里的默认值对应 Spark X2（控制台给的地址 wss://spark-api.xf-yun.com/x2）。
+                 注意 Domain 不是版本号：服务端白名单的正则是
+                 ^((?i)spark-x|x1|asean)$，X2 对应的是 spark-x。
+                 换成别的版本时 Path 和 Domain 要一起改，只改一个照样不通。 -->
+            <div class="field"><label>星火 Path</label><input type="text" id="xfSparkPath" value="/x2"></div>
+            <div class="field"><label>星火 Domain</label><input type="text" id="xfSparkDomain" value="spark-x"></div>
+          </div>
+          <button class="primary" onclick="pushVoiceConfig()">下发到设备</button>
+          <button class="ghost" onclick="clearVoiceConfig()">清除设备上的密钥</button>
+          <span class="hint" id="xfStatus" style="margin-left:12px;"></span>
+          <div style="font-size:11px;color:var(--text-faint);margin-top:10px;">
+            密钥经 MQTT 传输（broker 已启用账号认证），存放在设备本地配置里，
+            不写入本项目源码。星火三项按你开通的版本填，默认是 X2/V2。
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-head"><h2>外观</h2></div>
+          <div class="switch-row">
+            <div><div class="t">浅色主题</div><div class="d">切换控制台的整体配色</div></div>
+            <div class="switch" id="themeSwitch" onclick="toggleTheme()"></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-head"><h2>连接信息</h2><span class="hint">只读，登录时设置</span></div>
+          <div class="switch-row"><div class="t">Broker 地址</div><div class="d" id="cfgHost">--</div></div>
+          <div class="switch-row"><div class="t">当前账号</div><div class="d" id="cfgUser">--</div></div>
+        </div>
+        <div class="section">
+          <div class="section-head"><h2>网关运行参数</h2><span class="hint">需要网关/固件配合才能真正下发生效，当前为只读展示</span></div>
+          <div class="switch-row"><div class="t">CAN 总线波特率</div><div class="d">500 kbps（固定，改动需要重烧固件）</div></div>
+          <div class="switch-row"><div class="t">数据上报周期</div><div class="d">200 ms（App 侧固定值，暂未开放远程配置通道）</div></div>
+        </div>
+        <div class="section">
+          <div class="section-head"><h2>关于</h2></div>
+          <div class="switch-row"><div class="t">控制台版本</div><div class="d">v4.0 · 多页面控制台</div></div>
+          <div class="switch-row"><div class="t">通信协议</div><div class="d">MQTT over WebSocket，CAN 500kbps 网关桥接</div></div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<div id="toastContainer"></div>
+
+<!-- 带一个随时间变化的查询参数，强制每次加载都取最新的 app.js。
+     上面那三行 <meta> 只管 HTML 文档本身，管不到 script/link 这类子资源——
+     光有 meta 的话会出现"页面是新的、逻辑还是旧的"这种更难查的状态。
+     URL 变了浏览器就当成另一个资源，缓存自然绕开。
+     这是开发期的做法；真要上生产，应该换成构建时注入的内容哈希，
+     那样内容没变时才能真正复用缓存。 -->
+<script>
+  var s = document.createElement('script');
+  s.src = 'app.js?t=' + Date.now();
+  s.async = false;   /* 动态插入的脚本默认是 async，会打乱执行顺序；置 false 保持同步语义 */
+  document.head.appendChild(s);
+</script>
+</body>
+</html>

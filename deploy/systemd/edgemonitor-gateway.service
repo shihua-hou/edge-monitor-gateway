@@ -1,0 +1,29 @@
+[Unit]
+Description=EdgeMonitor CAN-MQTT Gateway
+# 只要求网络"起来了"，不等 broker：broker 在另一台机器上，
+# 它什么时候可用不该阻塞本机启动。网关自己会重连（首次 connect
+# 失败也不退出，交给 mosquitto_loop_forever 的退避重连慢慢等）。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/edgemonitor.env
+
+# CAN 接口每次开机都要重新配，放 ExecStartPre 里，
+# 前面加 - 表示"已经配好了就别报错"（重启服务时接口通常还 up 着）
+ExecStartPre=-/sbin/ip link set can0 type can bitrate 500000
+ExecStartPre=-/sbin/ip link set can0 up
+ExecStart=/root/monitor/bin/gateway_mqtt can0
+
+# 崩了自动拉起。之前进程一挂就彻底没人管，
+# 现象是"数据突然不更新了"，还得人上去看一眼才知道进程没了。
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=em-gateway
+
+[Install]
+WantedBy=multi-user.target

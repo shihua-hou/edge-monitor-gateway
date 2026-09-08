@@ -1,0 +1,24 @@
+[Unit]
+Description=EdgeMonitor V4L2 MJPEG Streamer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/edgemonitor.env
+
+# /dev/video0 是 SoC 内部 pxp、video1 是板载 CSI，USB 摄像头通常是 video2。
+# 摄像头拔插后编号会变，用 v4l2-ctl --list-devices 确认；
+# 想固定的话可以加一条 udev 规则按 USB 序列号做软链接。
+ExecStart=/root/monitor/bin/video_v4l2 /dev/video2 8081
+
+# 摄像头被拔掉时进程会退出，插回来能自己恢复
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=em-video
+
+[Install]
+WantedBy=multi-user.target

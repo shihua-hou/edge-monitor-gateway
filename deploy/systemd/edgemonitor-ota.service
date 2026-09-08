@@ -1,0 +1,19 @@
+[Unit]
+Description=EdgeMonitor OTA Service (MQTT triggered UDS upgrade)
+After=network-online.target edgemonitor-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/edgemonitor.env
+ExecStart=/root/monitor/bin/ota_service can0
+
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=em-ota
+
+[Install]
+WantedBy=multi-user.target

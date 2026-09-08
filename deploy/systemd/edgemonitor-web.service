@@ -1,0 +1,38 @@
+[Unit]
+Description=EdgeMonitor Web Dashboard (static files)
+# 只依赖网络接口起来即可。这个服务不连任何外部东西，
+# 就是把 web/ 目录里的两个静态文件发出去
+After=network.target
+
+[Service]
+Type=simple
+User=user
+Group=user
+# 直接把工作目录设成 web/，而不是用 --directory 参数。
+# 这台 VM 是 Python 3.6.9，而 `http.server --directory` 是 3.7 才加的——
+# 用了会直接 "unrecognized arguments" 退出码 2，然后被 Restart=always
+# 拉起来再退，无限循环。
+# （同一个坑项目里踩过：history_logger.py 里专门为 3.6 写了
+#   ThreadingHTTPServer 的降级分支，那也是 3.7 才有的东西。
+#   写这个 unit 时没想起来目标机器的 Python 版本。）
+# http.server 本来就是从当前目录提供文件，WorkingDirectory 完全等价，
+# 而且对版本没有要求。
+WorkingDirectory=/home/user/edgemonitor/web
+
+# 用 Python 自带的 http.server 而不是 nginx：这个大屏只有两个静态文件
+# （index.html + app.js），所有数据都走 MQTT over WebSocket 和历史服务的
+# HTTP 接口，服务器这边不需要任何动态能力。多引入一个 nginx 意味着多一份
+# 配置、多一个要维护的东西，收益是零。
+#
+# --bind 0.0.0.0 是必须的：默认只监听回环，板子和其它机器就访问不到了。
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=em-web
+
+[Install]
+WantedBy=multi-user.target

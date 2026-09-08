@@ -1,0 +1,28 @@
+[Unit]
+Description=EdgeMonitor Qt Touchscreen UI (linuxfb)
+After=network.target
+# 注意这里用 network.target 而不是 network-online.target：
+# 界面是给现场巡检人员看的，WiFi 没连上也应该照常显示（至少能看到
+# "离线"状态、能操作本地功能），不该被网络拖着不启动
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/edgemonitor.env
+WorkingDirectory=/root/monitor/bin
+
+# 直接输出到 framebuffer，板子上没跑 X server。
+# 触摸如果不工作，按实际情况补 Environment=QT_QPA_FB_TSLIB=1 之类，
+# 具体取决于板子上装的是 tslib 还是走 evdev，这里不预设
+ExecStart=/root/monitor/bin/edgemonitor_ui -platform linuxfb
+
+# UI 进程挂掉就自动拉起。这次现场就是这么丢的：进程退出后没人管，
+# 屏幕停在最后一帧，看着像卡死，实际上早就没了
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=em-ui
+
+[Install]
+WantedBy=multi-user.target

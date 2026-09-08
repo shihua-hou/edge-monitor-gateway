@@ -1,0 +1,18 @@
+# ============================================================
+# mosquitto ACL 模板 —— 把 viewer 账号真正限制成只读
+#
+# 用法：
+#   sudo cp acl.example /etc/mosquitto/acl
+#   编辑 mosquitto.conf，取消 acl_file 那行的注释
+#   sudo systemctl restart mosquitto   (或重新执行 mosquitto -c mosquitto.conf)
+#
+# 不启用这份文件时，broker 只做"认证"（谁都可以连，只要账号密码对），
+# 不做"授权"（连上之后能读写哪些主题不受限制）——这意味着任何账号，
+# 包括本该只读的 viewer，实际上都能往 monitor/cmd 发布控制命令。
+# ============================================================
+
+user em
+topic readwrite monitor/#
+
+user viewer
+topic read monitor/data/#

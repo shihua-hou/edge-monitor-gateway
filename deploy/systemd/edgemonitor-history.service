@@ -1,0 +1,29 @@
+[Unit]
+Description=EdgeMonitor History Logger (MQTT -> SQLite + query API)
+# 装在服务器侧，不是机器人上。broker 同机时等它先起来，
+# 但连不上也不会退出（paho 的 connect_async 自带重连）
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 以普通用户身份跑，不需要 root：它只读 MQTT、写自己目录下的 SQLite、
+# 监听一个高位端口。服务没必要拿到超过它需要的权限。
+User=user
+Group=user
+EnvironmentFile=/etc/edgemonitor-server.env
+# 路径跟实际部署位置一致（历史库就在这里，里面已经有数据）。
+# 原来写的是 /opt/edgemonitor——那是更规范的位置，但换过去要连数据一起搬，
+# 收益不值这个风险。真要规范化的话，连同 DB 一起 mv 再改这两行即可。
+WorkingDirectory=/home/user/edgemonitor
+ExecStart=/usr/bin/python3 /home/user/edgemonitor/history_logger.py
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=em-history
+
+[Install]
+WantedBy=multi-user.target

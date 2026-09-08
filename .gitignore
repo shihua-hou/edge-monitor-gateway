@@ -1,0 +1,81 @@
+# ── 第三方资料：正点原子官方 SDK / 例程 / 文档，约 4.7 GB，且有版权 ──
+相关资料/
+
+# 未使用的第三方库：本工程用 HAL，这份标准库是历史遗留，源码只在注释里提到过
+STM32F10x_StdPeriph_Lib_V3.5.0-master/
+
+# ── Keil 构建产物 ──
+# 注意：.sct 分散加载文件是 uVision 从工程设置生成的派生文件，
+# A/B 两个槽的链接地址真正的来源在 .uvprojx 里，所以整个 Output/ 都可以排除
+EdgeMonitor_App/Output/
+EdgeMonitor_Boot/Output/
+EdgeMonitor_App/Listings/
+EdgeMonitor_Boot/Listings/
+EdgeMonitor_App/Objects/
+EdgeMonitor_Boot/Objects/
+*.o
+*.d
+*.axf
+*.bin
+*.hex
+*.map
+*.lst
+*.crf
+*.dep
+*.iex
+*.htm
+*.build_log.htm
+*.scvd
+
+# Keil 的个人窗口布局，会随每次开关工程变化，不该进版本库
+*.uvguix.*
+*.uvoptx
+
+# ── Qt / make ──
+imx6ull_ui/Makefile
+imx6ull_ui/*.o
+imx6ull_ui/moc_*
+imx6ull_ui/qrc_*
+imx6ull_ui/ui_*
+imx6ull_ui/edgemonitor_ui
+imx6ull_ui/.qmake.stash
+
+# ── 交叉编译出来的可执行文件 ──
+gateway_imx6ull/gateway_mqtt
+gateway_imx6ull/gateway_can
+gateway_imx6ull/video_v4l2
+gateway_imx6ull/screen_share
+gateway_imx6ull/ota_service
+gateway_imx6ull/uds_tool
+gateway_imx6ull/gps_mqtt
+
+# ── Python ──
+__pycache__/
+*.pyc
+
+# ── 运行时数据，不入库 ──
+*.db
+*.db-shm
+*.db-wal
+*.log
+JLinkLog.txt
+
+# ── 凭据：只提交 .example，真配置绝不入库 ──
+# 一旦提交进 git，密钥就永远留在历史里，事后删除也洗不掉
+*.env
+!*.env.example
+mosquitto_passwd
+acl
+
+# ── 编辑器 / 系统 ──
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# ── 调试期的一次性辅助文件（读厂商 PDF 用的，不属于项目 ）──
+scripts/_*
+.preview/
+.claude/
+# 个人面试准备笔记，不属于项目。想上传就把下面这行删掉
+面试要点.md
