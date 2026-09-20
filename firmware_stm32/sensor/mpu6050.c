@@ -8,6 +8,7 @@
 #include "mpu6050.h"
 #include "./SYSTEM/delay/delay.h"
 #include <math.h>
+#include <stdio.h>      /* printf：零偏标定结果打到串口，方便现场确认标定是否合理 */
 
 #define MPU_SCL   GPIO_PIN_10
 #define MPU_SDA   GPIO_PIN_11
@@ -110,6 +111,17 @@ u8 MPU6050_Init(void)
 u8 MPU6050_GetAngle(s16 *pitch_x100, s16 *roll_x100, s16 *yaw_x100)
 {
     static float s_roll = 0.0f, s_pitch = 0.0f, s_yaw = 0.0f;
+    /* ===== 陀螺 Z 轴零偏补偿 =====
+     * 实测（车静止 31.8s）：pitch/roll 跨度 0.07°/0.04°（有加速度计校正），
+     * 而 yaw 从 -14.24° **单调线性**漂到 -3.69°，约 **20°/分钟**。
+     * 完全线性 = 恒定零偏，不是噪声，所以减掉就行。
+     *
+     * 不补偿的后果已经实际发生：路径录制用这个 yaw 做航迹推算，
+     * 录一分钟整条轨迹就转 20°，录出来的形状和实际走的完全对不上。 */
+    static float s_gz_bias = 0.0f;
+    static u16   s_cal_n = 0;          /* 开机标定已采样数 */
+    static float s_cal_sum = 0.0f;
+    const u16 CAL_SAMPLES = 100;       /* 100 × 20ms = 2 秒 */
     u8 buf[14];
     s16 ax, ay, az, gx, gy, gz;
     float acc_roll, acc_pitch;
@@ -139,10 +151,42 @@ u8 MPU6050_GetAngle(s16 *pitch_x100, s16 *roll_x100, s16 *yaw_x100)
     acc_pitch = atan2f(-(float)ax, sqrtf((float)ay * (float)ay + (float)az * (float)az))
                 * 57.29578f;
 
-    /* 陀螺仪角速度积分（°/s × s = °） */
+    /* 开机头 2 秒做零偏标定。这段时间内不积分 yaw（保持 0）。
+       **前提是上电时车是静止的**——这个前提对巡检车成立（开机肯定没在跑），
+       如果不成立，下面的连续零速修正也会慢慢把它拉回来。 */
+    if (s_cal_n < CAL_SAMPLES) {
+        s_cal_sum += (float)gz;
+        if (++s_cal_n == CAL_SAMPLES) {
+            s_gz_bias = s_cal_sum / (float)CAL_SAMPLES;
+            printf("MPU6050 gyro-Z bias = %d LSB (%d.%02d deg/s)\r\n",
+                   (int)s_gz_bias,
+                   (int)(s_gz_bias / 16.4f),
+                   (int)(((s_gz_bias / 16.4f) < 0 ? -(s_gz_bias / 16.4f) : (s_gz_bias / 16.4f)) * 100) % 100);
+        }
+    }
+
+    /* 陀螺仪角速度积分（°/s × s = °）。
+       roll/pitch 不减零偏：它们有加速度计在互补滤波里持续拉回，
+       零偏不会积累；只有 yaw 是纯积分，需要单独处理。 */
     gyr_roll  = (float)gx / 16.4f * dt;
     gyr_pitch = (float)gy / 16.4f * dt;
-    gyr_yaw   = (float)gz / 16.4f * dt;
+    {
+        float rate = ((float)gz - s_gz_bias) / 16.4f;    /* °/s，已去零偏 */
+        if (s_cal_n < CAL_SAMPLES) {
+            rate = 0.0f;                                  /* 标定期不积分 */
+        } else if (rate > -0.5f && rate < 0.5f) {
+            /* 零速修正（ZUPT）：角速度小到这个程度时当作"没在转"，
+               把测到的值当成新的零偏证据，慢慢往过去拉。
+               系数取得很小：拉得快会把真实的慢速转向当成零偏吸掉。
+
+               死区 0.5°/s 的代价：比这更慢的真实转向会被忽略。
+               对巡检车可以接受——0.5°/s 意味着转一周要 12 分钟。
+               而不加死区的话，残余噪声会继续慢慢积出去。 */
+            s_gz_bias += 0.002f * ((float)gz - s_gz_bias);
+            rate = 0.0f;
+        }
+        gyr_yaw = rate * dt;
+    }
 
     /* 互补滤波：陀螺仪(高带宽) + 加速度计(校正漂移) */
     s_roll  = 0.98f * (s_roll  + gyr_roll)  + 0.02f * acc_roll;

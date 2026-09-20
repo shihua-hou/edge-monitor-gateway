@@ -39,8 +39,12 @@ private:
     void noteCommand(const QString &label, int bit, bool want);
     void showAck(const QString &text, const char *color);
 
-    QPushButton *m_ledBtn;
-    QPushButton *m_buzzerBtn;
+    /* 改成 iOS 开关："开/关"这种二态设备，iOS 的表达方式就是
+       列表行 + 右侧开关，而不是一个写着"LED：关"的大按钮。
+       后者还有个真毛病：按钮文字既是状态又是动作，
+       "LED：关"到底是"当前是关"还是"点一下就关"，歧义一直在。 */
+    class IosSwitch *m_ledSw;
+    class IosSwitch *m_buzzerSw;
     QSlider *m_speedSlider;
     QLabel *m_speedVal;
     QLabel *m_ackLabel = nullptr;    // 最近一条命令的回执

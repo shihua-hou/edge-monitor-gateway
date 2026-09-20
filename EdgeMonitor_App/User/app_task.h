@@ -18,8 +18,12 @@ typedef struct {
      * 网关侧 gateway_can.c / gateway_mqtt.c 必须同步改成 int16_t 解析。 */
     s16 rpm_left;          /* 左轮转速 RPM，正=前进 */
     s16 rpm_right;         /* 右轮转速 RPM，正=前进 */
+    /* 里程 = 路程，只增不减；位移 = 有符号，倒车会减小。
+       两者**不可互换**，做轨迹推算只能用 disp。 */
     u32 odom_left_cm;      /* 左轮里程 cm */
     u32 odom_right_cm;     /* 右轮里程 cm */
+    s32 disp_left_mm;      /* 左轮位移 mm，正=前进，倒车减小 */
+    s32 disp_right_mm;     /* 右轮位移 mm，正=前进，倒车减小 */
     u8  sys_state;         /* 系统状态字 bit0=LED bit1=Buzzer bit2=Motor bit3=EStop */
     /* 传感器健康位，见下面的 SENS_FAULT_*。
      *
@@ -63,5 +67,8 @@ void HW_Led_Set(u8 on);
 void HW_Buzzer_Set(u8 on);
 void HW_Motor_SetSpeed(u8 pwm_percent, u8 dir); /* dir: 0停 1前 2后 */
 void HW_Motor_SetSteer(u8 direction, u8 pwm, u16 ms); /* 0x04左转 0x05右转 */
+/* 坦克式差速。left/right 是 -100~+100 的百分比（已去偏置）。
+   这个接口自带超时保护，见 motor.h 的 Motor_SetTank 说明。 */
+void HW_Motor_SetTank(s8 left, s8 right);
 
 #endif

@@ -1,5 +1,7 @@
 #include "attitudewidget.h"
 #include <QPainter>
+#include <QPainterPath>
+#include "iostheme.h"
 #include <QLinearGradient>
 #include <QColor>
 #include <QtMath>
@@ -7,7 +9,9 @@
 
 AttitudeWidget::AttitudeWidget(QWidget *parent) : QWidget(parent)
 {
-    setMinimumHeight(160);
+    /* 见 vehiclepage.cpp 的说明：栈里所有页面的最小尺寸会取最大值，
+       所以每一页都有义务把自己的下限压到真正"还能看"的程度。 */
+    setMinimumHeight(110);
 }
 
 void AttitudeWidget::setAttitude(double pitchDeg, double rollDeg, double yawDeg)
@@ -21,7 +25,14 @@ void AttitudeWidget::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     const int w = width(), h = height();
-    p.fillRect(rect(), Qt::black);
+
+    /* 把整个仪表裁成 squircle，和外层卡片的圆角对上。
+       原来是个硬直角矩形，嵌在圆角卡片里特别拧——
+       iOS 里几乎不存在"圆角容器里装个直角内容"这种搭配。
+       裁剪路径一次性设好，后面所有绘制都在它里面。 */
+    QPainterPath clip = Ios::squircle(QRectF(rect()), 12);
+    p.setClipPath(clip);
+    p.fillPath(clip, Qt::black);
 
     // ---- 旋转的天地球 ----
     p.save();

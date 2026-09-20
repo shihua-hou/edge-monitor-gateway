@@ -4,6 +4,7 @@
 #include <QWidget>
 
 class QLabel;
+class Sparkline;
 class AttitudeWidget;
 
 /* DashboardPage - 中控首页：车载中控风格的"座舱概览"。
@@ -33,6 +34,7 @@ private:
     QLabel *m_clock, *m_dateLabel;
     QLabel *m_weatherText, *m_weatherTemp;
     QLabel *m_vTemp, *m_vHumi, *m_vLight, *m_vDist;
+    Sparkline *m_sTemp, *m_sHumi, *m_sLight, *m_sDist;
     int m_health = 0;   // 见 updateSensorHealth
     /* 把一个数值标成正常/陈旧两种样式。抽出来是因为四个数值的处理
        完全一样，写四遍只会让以后改样式时漏掉其中一个 */

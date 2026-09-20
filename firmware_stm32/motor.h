@@ -53,6 +53,7 @@ void Motor_Resume(void);                   /* 解除急停 */
  * 必须周期稳定，PI 的积分项和转速换算都依赖这个固定周期。 */
 void Motor_Tick(void);
 
+void Motor_GetDisp(s32 *disp_l_mm, s32 *disp_r_mm);
 void Motor_GetState(s16 *rpm_l, s16 *rpm_r, u32 *odom_l_cm, u32 *odom_r_cm);
 
 /* 当前是否在转（任一轮目标或实测非零）。给 sys_state 的 bit2 用 */
@@ -66,5 +67,17 @@ u8   Motor_IsFaulted(void);
 
 /* 定时转向：left/right 差速转 ms 毫秒后自动停。ms=0 表示一直转 */
 void Motor_Turn(s16 left_rpm, s16 right_rpm, u16 ms);
+
+/* 坦克式差速（路径跟踪用）。left/right 单位是百分比 -100~+100。
+ *
+ * **自带超时保护**：收到一次就启动一个 TANK_TIMEOUT_MS 的计时，
+ * 超时前没有新的 SetTank 就自动停车。
+ *
+ * 为什么只给这个接口加超时、而不是给所有运动命令：
+ *   手动遥控（ACT_ON 等）的语义是"一直跑到我叫停"，上层自己负责停；
+ *   而坦克命令是**自主路径跟踪**在用，上位机（Qt 界面）一旦卡死或崩溃，
+ *   车会带着最后一条差速指令一直转圈跑下去。
+ *   自主模式下"指令流断了"必须等价于"停"。 */
+void Motor_SetTank(s8 left_pct, s8 right_pct);
 
 #endif /* __MOTOR_H */

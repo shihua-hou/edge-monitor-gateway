@@ -176,6 +176,16 @@ void HW_Motor_SetSpeed(u8 pwm_percent, u8 dir)
  * ms=0 时不自动停——这是故意的：界面上长按转向键属于这种情况，
  * 松手时会发 ACT_OFF。但远程下发建议总是带 ms，万一链路断了，
  * 车不会一直转下去。 */
+/* 坦克式差速。参数已经是去过偏置的 -100~+100。 */
+void HW_Motor_SetTank(s8 left, s8 right)
+{
+    if (left  >  100) left  =  100;
+    if (left  < -100) left  = -100;
+    if (right >  100) right =  100;
+    if (right < -100) right = -100;
+    Motor_SetTank(left, right);
+}
+
 void HW_Motor_SetSteer(u8 direction, u8 pwm, u16 ms)
 {
     s16 rpm;
@@ -341,6 +351,7 @@ void task_sensor_collect(void *arg)
         Motor_Tick();
         Motor_GetState(&g_sensor.rpm_left, &g_sensor.rpm_right,
                        &g_sensor.odom_left_cm, &g_sensor.odom_right_cm);
+        Motor_GetDisp(&g_sensor.disp_left_mm, &g_sensor.disp_right_mm);
         /* 飞车保护触发后把故障位顶上去。不上报的话，大屏上只会看到
            "转速 0"——和正常停车完全一样，没人会知道刚才失控过。 */
         if (Motor_IsFaulted()) g_sensor.sensor_health |= SENS_FAULT_MOTOR;
@@ -400,6 +411,25 @@ void task_can_report(void *arg)
            而这里的 buf[7] 一直空着。网关侧 gateway_mqtt.c 要同步解析。 */
         buf[7] = (g_sensor.batt_mv / 100 > 255) ? 255 : (u8)(g_sensor.batt_mv / 100);
         CAN1_SendStd(CAN_ID_IMU_FRAME, buf, 8);
+
+        /* 0x103 左右轮有符号位移（各 int32，单位 mm）。
+           0x102 那 8 个字节已经排满了，塞不下，所以单开一帧。
+           为什么值得单开：上位机原来拿 5Hz 的转速去积分算位移，
+           两次采样之间的加减速完全看不见；而这里每个编码器计数都不会漏。
+
+           **必须排在 0x102 前面**：网关收到 0x103 只是缓存起来，
+           等 0x102 到了才把两者合并成一条 MQTT 消息发出去。
+           顺序反了的话，每条消息里的位移都比转速旧一帧（200ms），
+           车速快时就是十几厘米的错位。 */
+        buf[0] = (u8)(g_sensor.disp_left_mm  >> 24);
+        buf[1] = (u8)(g_sensor.disp_left_mm  >> 16);
+        buf[2] = (u8)(g_sensor.disp_left_mm  >> 8);
+        buf[3] = (u8)(g_sensor.disp_left_mm       );
+        buf[4] = (u8)(g_sensor.disp_right_mm >> 24);
+        buf[5] = (u8)(g_sensor.disp_right_mm >> 16);
+        buf[6] = (u8)(g_sensor.disp_right_mm >> 8);
+        buf[7] = (u8)(g_sensor.disp_right_mm      );
+        CAN1_SendStd(CAN_ID_MOTOR_DISP, buf, 8);
 
         /* 0x102 小车运动状态 */
         buf[0] = (u8)(g_sensor.rpm_left >> 8);
@@ -512,6 +542,13 @@ void task_cmd_process(void *arg)
                 case ACT_RESUME:
                     Motor_Resume();
                     g_sensor.sys_state &= (u8)~0x08;
+                    break;
+                case ACT_TANK:
+                    /* p1/p2 是 0~200 的偏移编码，减掉 100 才是真实百分比。
+                       直接当有符号读的话，倒车（负值）会变成 150+ 的大正数，
+                       车会以满速往前冲——而不会报任何错。 */
+                    HW_Motor_SetTank((s8)((s16)cmd.p1 - ACT_TANK_BIAS),
+                                     (s8)((s16)cmd.p2 - ACT_TANK_BIAS));
                     break;
                 }
                 /* bit2（电机在转）不在这里维护了，改由上报时现算，见 task_can_report。

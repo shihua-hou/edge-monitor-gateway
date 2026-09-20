@@ -21,6 +21,9 @@ CONFIG   += c++11
 
 SOURCES += \
     main.cpp \
+    iostheme.cpp \
+    ioscard.cpp \
+    iosswitch.cpp \
     mainwindow.cpp \
     mqttclient.cpp \
     weatherclient.cpp \
@@ -29,6 +32,10 @@ SOURCES += \
     appconfig.cpp \
     settingspage.cpp \
     dashboardpage.cpp \
+    vehiclepage.cpp \
+    mappage.cpp \
+    pinyinime.cpp \
+    pathpage.cpp \
     controlpage.cpp \
     chatpage.cpp \
     attitudewidget.cpp \
@@ -38,6 +45,9 @@ SOURCES += \
     virtualkeyboard.cpp
 
 HEADERS += \
+    iostheme.h \
+    ioscard.h \
+    iosswitch.h \
     mainwindow.h \
     mqttclient.h \
     weatherclient.h \
@@ -46,6 +56,10 @@ HEADERS += \
     appconfig.h \
     settingspage.h \
     dashboardpage.h \
+    vehiclepage.h \
+    mappage.h \
+    pinyinime.h \
+    pathpage.h \
     controlpage.h \
     chatpage.h \
     attitudewidget.h \

@@ -44,14 +44,33 @@ private slots:
        在消息回调里走完整的 applySettings 会重建当前连接导致死循环 */
     void applyVoiceConfig();
 
+protected:
+    /* 滑块的首次定位必须等到窗口真的显示、布局算完之后。
+       踩过的坑：main.cpp 里窗口是开机动画结束后（1.1s）才 showFullScreen 的，
+       而构造函数里的 QTimer::singleShot(0) 早就跑完了——那时按钮的
+       geometry 还是默认值，滑块会停在左上角。 */
+    void showEvent(class QShowEvent *e) override;
+    void resizeEvent(class QResizeEvent *e) override;
+    /* 见 mainwindow.cpp：把"窗口比屏幕大"这种沉默故障变成一行日志 */
+    void checkFitsScreen();
+
 private:
     void buildUi();
     void connectServices();
     void publishCmd(int dev, int act, int p1, int p2);
     void raiseAlert(const QString &key, const QString &level, const QString &title, const QString &msg);
+    /* 把导航选中滑块移到第 index 项。animate=false 用于首次定位 */
+    void movePill(int index, bool animate);
+
+    /* 导航选中滑块（弹簧动画）。放在按钮下层，只动 geometry。 */
+    QWidget *m_navPill = nullptr;
+    class QPropertyAnimation *m_navPillAnim = nullptr;
 
     QStackedWidget *m_stack;
     DashboardPage *m_dashboard;
+    class VehiclePage *m_vehicle;
+    class MapPage *m_map;
+    class PathPage *m_path;
     ControlPage *m_control;
     ChatPage *m_chat;
     SettingsPage *m_settings;
@@ -72,7 +91,11 @@ private:
 
     QLabel *m_connDot;
     QLabel *m_connText;
-    NavIconButton *m_navBtns[4];
+    /* 导航项个数。**只在这里定一处**——原来 types[6]/names[6]/m_navBtns[6]
+       三个 6 分散在两个文件里，加一页要改三处，漏一处就是数组越界，
+       而越界写的是相邻成员，表现会是别的控件莫名其妙地坏掉。 */
+    static const int kNavCount = 7;
+    NavIconButton *m_navBtns[kNavCount];
 
     MqttClient *m_mqtt;
     WeatherClient *m_weather;

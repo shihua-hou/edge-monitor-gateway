@@ -1,4 +1,5 @@
 #include "settingspage.h"
+#include "iostheme.h"
 #include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
@@ -13,7 +14,8 @@ static QFrame *makeSection(QWidget *parent, const QString &title, QVBoxLayout **
     box->setObjectName("panel");
     QVBoxLayout *outer = new QVBoxLayout(box);
     QLabel *head = new QLabel(title, box);
-    head->setStyleSheet("font-size:15px; font-weight:700; color:#e6e6e6; margin-bottom:6px;");
+    head->setFont(Ios::fontHeadline());
+    head->setStyleSheet(QString("color:%1; margin-bottom:8px;").arg(Ios::label().name()));
     outer->addWidget(head);
     QVBoxLayout *body = new QVBoxLayout;
     body->setSpacing(10);
@@ -25,7 +27,8 @@ static QFrame *makeSection(QWidget *parent, const QString &title, QVBoxLayout **
 QLineEdit *SettingsPage::addField(QVBoxLayout *form, const QString &label, bool password)
 {
     QLabel *lab = new QLabel(label);
-    lab->setStyleSheet("font-size:12px; color:#8a94a6;");
+    lab->setFont(Ios::fontFootnote());
+    lab->setStyleSheet(QString("color:%1;").arg(Ios::labelSecondary().name(QColor::HexArgb)));
     QLineEdit *edit = new QLineEdit;
     edit->setMinimumHeight(38);
     if (password) edit->setEchoMode(QLineEdit::Password);
@@ -36,11 +39,18 @@ QLineEdit *SettingsPage::addField(QVBoxLayout *form, const QString &label, bool 
 
 SettingsPage::SettingsPage(QWidget *parent) : QWidget(parent), m_mqttFromEnv(false)
 {
-    setStyleSheet(
-        "QLineEdit { background:#1a2332; color:#e6e6e6; border:1px solid #2a3648;"
-        "  border-radius:7px; padding:8px 10px; font-size:13px; }"
-        "#panel { background:#141b28; border:1px solid #232f42; border-radius:12px; padding:14px; }"
-    );
+    /* iOS 输入框：无描边、填充色底、圆角 10。
+       iOS 里输入框靠"比背景亮一级的填充"来区分，不画边框——
+       边框是 Material/Web 的语言。 */
+    setStyleSheet(QString(
+        "QLineEdit { background:%1; color:%2; border:none;"
+        "  border-radius:10px; padding:11px 12px; font-size:16px; }"
+        "QLineEdit:focus { background:%3; }"
+        "#panel { background:%4; border:none; border-radius:16px; padding:16px; }")
+        .arg(QColor(0x2C,0x2C,0x2E).name())
+        .arg(Ios::label().name())
+        .arg(QColor(0x3A,0x3A,0x3C).name())
+        .arg(Ios::bgElevated().name()));
 
     QScrollArea *scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
@@ -61,7 +71,8 @@ SettingsPage::SettingsPage(QWidget *parent) : QWidget(parent), m_mqttFromEnv(fal
     m_mqttEnvHint = new QLabel("由 /etc/edgemonitor.env 提供，与网关共用一份配置；"
                                "要改请改该文件（守护脚本每轮重读，无需重启）");
     m_mqttEnvHint->setWordWrap(true);
-    m_mqttEnvHint->setStyleSheet("font-size:12px; color:#ffab3d;");
+    m_mqttEnvHint->setFont(Ios::fontFootnote());
+    m_mqttEnvHint->setStyleSheet(QString("color:%1;").arg(Ios::orange().name()));
     m_mqttEnvHint->hide();
     mqttBody->addWidget(m_mqttEnvHint);
 
@@ -84,7 +95,12 @@ SettingsPage::SettingsPage(QWidget *parent) : QWidget(parent), m_mqttFromEnv(fal
 
     QPushButton *saveBtn = new QPushButton("保存并应用", content);
     saveBtn->setMinimumHeight(46);
-    saveBtn->setStyleSheet("background:#3ddc97; color:#04140d; font-weight:700; font-size:15px; border-radius:9px;");
+    /* iOS 主按钮：systemBlue 实心 + 白字，圆角 14 */
+    saveBtn->setStyleSheet(QString(
+        "QPushButton { background:%1; color:white; border:none;"
+        "  border-radius:14px; font-size:17px; font-weight:600; padding:12px; }"
+        "QPushButton:pressed { background:%2; }")
+        .arg(Ios::blue().name()).arg(Ios::blue().darker(120).name()));
     connect(saveBtn, &QPushButton::clicked, this, [this]() {
         AppConfig c = config();
         c.save();

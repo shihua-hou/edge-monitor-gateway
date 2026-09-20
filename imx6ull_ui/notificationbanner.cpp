@@ -3,6 +3,7 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QPropertyAnimation>
+#include "iostheme.h"
 #include <QTimer>
 #include <QPainter>
 #include <QPainterPath>
@@ -70,7 +71,11 @@ private:
 NotificationBanner::NotificationBanner(QWidget *parent) : QWidget(parent)
 {
     setMaximumHeight(0);   // 默认收起，高度动画展开到 headerHeight 就是"滑下来"的效果
-    setStyleSheet("background:#1a2332; border:1px solid #2a3648; border-radius:10px;");
+    /* iOS 通知卡：无描边、深灰材质、大圆角。
+       原来那种"左侧一条粗色条"是 Android/Web 的 alert 语言，
+       iOS 通知靠的是图标颜色 + 卡片本身，不画边框。 */
+    setStyleSheet(QString("background:%1; border:none; border-radius:16px;")
+                  .arg(QColor(0x2C,0x2C,0x2E).name()));
 
     QHBoxLayout *l = new QHBoxLayout(this);
     l->setContentsMargins(14, 10, 14, 10);
@@ -80,16 +85,21 @@ NotificationBanner::NotificationBanner(QWidget *parent) : QWidget(parent)
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(2);
     m_title = new QLabel(this);
-    m_title->setStyleSheet("font-size:13px; font-weight:700; color:#e6e6e6;");
+    m_title->setFont(Ios::fontHeadline());
+    m_title->setStyleSheet(QString("color:%1;").arg(Ios::label().name()));
     m_msg = new QLabel(this);
-    m_msg->setStyleSheet("font-size:12px; color:#8a94a6;");
+    m_msg->setFont(Ios::fontFootnote());
+    m_msg->setStyleSheet(QString("color:%1;").arg(Ios::labelSecondary().name(QColor::HexArgb)));
     textLayout->addWidget(m_title);
     textLayout->addWidget(m_msg);
     l->addWidget(m_icon);
     l->addWidget(textCol, 1);
 
     m_anim = new QPropertyAnimation(this, "maximumHeight", this);
-    m_anim->setDuration(220);
+    m_anim->setDuration(Ios::durNormal());
+    /* 弹簧曲线：通知滑下来时末尾有一下很轻的回弹，
+       这是 iOS 通知最标志性的手感。线性滑下来会显得"硬"。 */
+    m_anim->setEasingCurve(Ios::spring());
 
     m_dismissTimer = new QTimer(this);
     m_dismissTimer->setSingleShot(true);
@@ -109,10 +119,9 @@ void NotificationBanner::showNext()
     QStringList item = m_queue.dequeue();
     QString title = item.value(0), msg = item.value(1), level = item.value(2);
 
-    QString border = "#3a4a66";   // info 蓝灰
-    if (level == "warn") border = "#ffb454";
-    if (level == "danger") border = "#ff5470";
-    setStyleSheet(QString("background:#1a2332; border:1px solid %1; border-left:4px solid %1; border-radius:10px;").arg(border));
+    /* 级别只体现在左侧图标颜色上，卡片本身不变色。
+       iOS 不用"整张卡变红"这种表达——那在深色主题下很吵，
+       而且连着来几条告警时整屏都在闪。 */
     m_icon->setLevel(level);
     m_title->setText(title);
     m_msg->setText(msg);

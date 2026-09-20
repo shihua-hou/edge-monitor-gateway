@@ -7,6 +7,8 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QEvent>
+#include <QLabel>
+#include <QFile>
 
 /* 特殊键用这几个名字标记，"标签即标识"，省掉再维护一张 label->keycode
    的映射表；这些字符串不会跟任何一个真实键帽冲突。
@@ -21,6 +23,13 @@ static const char *K_SPACE = "空格";
 static const char *K_SYM   = "?123";
 static const char *K_ABC   = "ABC";
 static const char *K_HIDE  = "收起";
+/* 中英切换键。标签直接显示当前状态（"中"/"英"），而不是显示"要切到哪"——
+   后者每次都要在脑子里绕一道，而人看键盘是为了确认现在能打什么。 */
+static const char *K_LANG  = "中/英";
+
+/* 候选条最多放几个。屏幕宽 1024，键盘占满宽度，
+   一个候选按钮连中文带边距约 90px，放 9 个还留得下编码显示区。 */
+static const int kMaxCands = 9;
 
 VirtualKeyboard::VirtualKeyboard(QWidget *parent)
     : QWidget(parent)
@@ -37,6 +46,36 @@ VirtualKeyboard::VirtualKeyboard(QWidget *parent)
     m_rows = new QVBoxLayout(this);
     m_rows->setContentsMargins(4, 4, 4, 4);
     m_rows->setSpacing(4);
+
+    /* 候选条。**默认隐藏**：英文输入时它一行都不占，
+       不然键盘白白高出 40px，而 600px 的屏每一像素都要省。 */
+    m_candBar = new QWidget(this);
+    m_candLayout = new QHBoxLayout(m_candBar);
+    m_candLayout->setContentsMargins(0, 0, 0, 0);
+    m_candLayout->setSpacing(4);
+
+    m_composeLabel = new QLabel(m_candBar);
+    m_composeLabel->setMinimumWidth(96);
+    m_composeLabel->setStyleSheet("color:#5aa9ff; font-size:15px; padding-left:6px;");
+    m_candLayout->addWidget(m_composeLabel);
+
+    for (int i = 0; i < kMaxCands; i++) {
+        QPushButton *b = new QPushButton(m_candBar);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setMinimumHeight(34);
+        b->setStyleSheet(
+            "QPushButton{background:#141c2a; color:#e6e6e6; border:1px solid #2a3648;"
+            "  border-radius:6px; font-size:17px; padding:0 8px;}"
+            "QPushButton:pressed{background:#3ddc97; color:#04140d;}");
+        connect(b, &QPushButton::clicked, this, [this, i]() { commitCandidate(i); });
+        b->hide();
+        m_candBtns.append(b);
+        m_candLayout->addWidget(b);
+    }
+    m_candLayout->addStretch();
+    m_candBar->hide();
+    m_rows->addWidget(m_candBar);
+
     buildRows();
     hide();
 }
@@ -52,8 +91,13 @@ QWidget *VirtualKeyboard::makeKey(const QString &label, int stretch)
     b->setMinimumHeight(36);
     b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
+    /* 中英键显示的是**当前状态**（"中"/"英"），不是"点了会切到哪"。
+       后者每次都要在脑子里绕一道，而人看键盘是为了确认现在能打什么。 */
+    if (label == K_LANG) b->setText(m_chinese ? QStringLiteral("中") : QStringLiteral("英"));
+
     const bool fn = (label == K_SHIFT || label == K_BACK || label == K_ENTER ||
-                     label == K_SYM   || label == K_ABC  || label == K_HIDE);
+                     label == K_SYM   || label == K_ABC  || label == K_HIDE ||
+                     label == K_LANG);
     if (fn) b->setProperty("fn", "1");
 
     connect(b, &QPushButton::clicked, this, [this, label]() { onKeyPressed(label); });
@@ -80,16 +124,25 @@ void VirtualKeyboard::buildRows() { rebuildKeys(); }
 
 void VirtualKeyboard::rebuildKeys()
 {
-    // 清空旧的行（切换大小写/符号层时整层重建，比逐个改按钮文字简单可靠）
-    while (QLayoutItem *item = m_rows->takeAt(0)) {
+    /* 清空旧的行（切换大小写/符号层时整层重建，比逐个改按钮文字简单可靠）。
+       **从 1 开始，不动 0 号**：0 号是候选条，它跨层存在，
+       跟着一起清掉的话切一次大小写它就从布局里掉出来了——
+       控件还活着，只是不再被布局管，表现为"候选条莫名其妙消失"。 */
+    while (m_rows->count() > 1) {
+        QLayoutItem *item = m_rows->takeAt(1);
         if (QLayout *sub = item->layout()) {
             while (QLayoutItem *ci = sub->takeAt(0)) {
                 if (ci->widget()) ci->widget()->deleteLater();
                 delete ci;
             }
-            delete sub;
+            /* **这里不能再 delete sub。**
+               QLayout 继承自 QLayoutItem，takeAt() 取出一个嵌套布局时，
+               item 和 item->layout() 是**同一个对象**——分别删一次就是双重释放。
+               原来的代码两个都删，只是平时走不到：只有切大小写/符号层时
+               才会进这个清理循环，而那两个键大概没人按过。
+               加了中英切换键之后每次切换都走这条路，当场崩。 */
         }
-        delete item;
+        delete item;   /* item 就是那个子布局本身，删这一次就够 */
     }
 
     if (m_layer == Symbol) {
@@ -105,7 +158,8 @@ void VirtualKeyboard::rebuildKeys()
         addRow({C("q"),C("w"),C("e"),C("r"),C("t"),C("y"),C("u"),C("i"),C("o"),C("p")});
         addRow({C("a"),C("s"),C("d"),C("f"),C("g"),C("h"),C("j"),C("k"),C("l")});
         addRow({QString(K_SHIFT),C("z"),C("x"),C("c"),C("v"),C("b"),C("n"),C("m"),QString(K_BACK)});
-        addRow({QString(K_SYM), QString(K_HIDE), QString(K_SPACE), ".", QString(K_ENTER)});
+        addRow({QString(K_SYM), QString(K_LANG), QString(K_HIDE),
+                QString(K_SPACE), ".", QString(K_ENTER)});
     }
 }
 
@@ -131,6 +185,12 @@ void VirtualKeyboard::sendKey(int key, const QString &text)
 
 void VirtualKeyboard::onKeyPressed(const QString &label)
 {
+    if (label == K_LANG)  { setChinese(!m_chinese); return; }
+
+    /* 中文态先让拼音逻辑处理。它处理不了的（比如符号层的键）再往下走，
+       按原来的路径直接发给输入框。 */
+    if (m_chinese && handleChineseKey(label)) return;
+
     if (label == K_SHIFT) { setLayer(m_layer == Upper ? Lower : Upper); return; }
     if (label == K_SYM)   { setLayer(Symbol); return; }
     if (label == K_ABC)   { setLayer(Lower);  return; }
@@ -153,6 +213,106 @@ void VirtualKeyboard::onKeyPressed(const QString &label)
     if (m_layer == Upper) setLayer(Lower);
 }
 
+
+/* ==================== 中文输入 ==================== */
+
+void VirtualKeyboard::setChinese(bool on)
+{
+    if (on && !m_imeTried) {
+        m_imeTried = true;
+        /* 词库跟可执行文件放一起。找不到就退回英文——
+           **不能假装切成功了**：一个按了没反应的"中"键，
+           比一个明确告诉你没装词库的键坏得多。 */
+        m_ime.load(QStringLiteral("/home/root/pinyin.dict"));
+    }
+    if (on && !m_ime.isLoaded()) {
+        qWarning("[pinyin] 词库没加载成功，保持英文输入");
+        return;
+    }
+
+    m_chinese = on;
+    clearComposing();
+    /* 切到中文时强制回小写层：中文态下"大写"没有意义，
+       而停在上档层会让字母键显示成大写，看着像还在英文。 */
+    if (m_chinese && m_layer != Lower) setLayer(Lower);
+    else rebuildKeys();
+}
+
+void VirtualKeyboard::clearComposing()
+{
+    m_composing.clear();
+    m_cands.clear();
+    m_composeLabel->clear();
+    for (int i = 0; i < m_candBtns.size(); i++) m_candBtns[i]->hide();
+    m_candBar->setVisible(false);
+}
+
+void VirtualKeyboard::updateCandidates()
+{
+    if (m_composing.isEmpty()) { clearComposing(); return; }
+
+    m_cands = m_ime.candidates(m_composing, kMaxCands);
+    m_composeLabel->setText(m_composing);
+
+    for (int i = 0; i < m_candBtns.size(); i++) {
+        if (i < m_cands.size()) {
+            m_candBtns[i]->setText(m_cands[i]);
+            m_candBtns[i]->show();
+        } else {
+            m_candBtns[i]->hide();
+        }
+    }
+    /* 即使一个候选都没有也要把候选条显示出来——那样至少能看到
+       自己打的拼音是什么，才知道是打错了还是词库里没有。 */
+    m_candBar->setVisible(true);
+}
+
+void VirtualKeyboard::commitCandidate(int index)
+{
+    if (index < 0 || index >= m_cands.size()) return;
+    const QString word = m_cands.at(index);
+    /* 一次一个字符地发。QKeyEvent 带多字符 text 时，部分控件只取第一个字符，
+       "你好"会变成"你"——逐字符发没有这个问题，代价可以忽略。 */
+    for (int i = 0; i < word.size(); i++)
+        sendKey(Qt::Key_unknown, QString(word.at(i)));
+    clearComposing();
+}
+
+bool VirtualKeyboard::handleChineseKey(const QString &label)
+{
+    /* 回车/收起：有未上屏的拼音就先清掉，别把拼音字母漏到输入框里 */
+    if (label == K_ENTER || label == K_HIDE) {
+        if (!m_composing.isEmpty()) { clearComposing(); return true; }
+        return false;
+    }
+
+    if (label == K_BACK) {
+        if (m_composing.isEmpty()) return false;   /* 没在打字，退格照常删输入框 */
+        m_composing.chop(1);
+        updateCandidates();
+        return true;
+    }
+
+    if (label == K_SPACE) {
+        /* 空格上屏第一个候选，和常见输入法一致。
+           没有候选时（拼音打错了）就当普通空格。 */
+        if (!m_cands.isEmpty()) { commitCandidate(0); return true; }
+        return false;
+    }
+
+    /* 只有单个小写字母进编码缓冲。数字和符号在中文态下直接上屏，
+       不参与拼音——打"1"就该出"1"。 */
+    if (label.size() == 1) {
+        const QChar ch = label.at(0);
+        if (ch >= QLatin1Char('a') && ch <= QLatin1Char('z')) {
+            m_composing += ch;
+            updateCandidates();
+            return true;
+        }
+    }
+    return false;
+}
+
 void VirtualKeyboard::attachToApplication()
 {
     qApp->installEventFilter(this);
@@ -169,6 +329,9 @@ bool VirtualKeyboard::eventFilter(QObject *obj, QEvent *ev)
         /* 只在焦点确实离开了输入框时收起。键帽是 NoFocus 的，点它们不会
            产生 FocusOut，所以这里不会被"点一下键盘就把自己收起来"误伤 */
         if (obj == m_target) {
+            /* 未上屏的拼音要丢掉。留着的话下次在**另一个**输入框弹出键盘时，
+               候选条还挂着上一个框的半截拼音，一按就把字上到错的地方。 */
+            clearComposing();
             m_target = nullptr;
             hide();
         }

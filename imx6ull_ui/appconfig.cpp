@@ -28,8 +28,22 @@ AppConfig AppConfig::load()
        后 export，改一处就能全体生效。QSettings 保留兜底，是为了手工启动
        （不经过守护脚本、没有这些环境变量）时还能从界面上配。 */
     const QString envHost = QString::fromUtf8(qgetenv("MQTT_HOST")).trimmed();
-    const QString envUser = QString::fromUtf8(qgetenv("MQTT_USER")).trimmed();
-    const QString envPass = QString::fromUtf8(qgetenv("MQTT_PASS"));
+    /* 界面**优先用自己的那组账号**（MQTT_UI_USER/PASS），取不到才退回
+       全局的 MQTT_USER/PASS。
+       理由是权限方向不同：网关那几个进程只往上发遥测、只接收指令，
+       而界面正好相反——只读遥测、要能发指令。broker 的 ACL 按这个
+       方向分了账号（见 deploy/board/acl-board），共用一个账号的话，
+       那个账号就同时具备"发数据"和"发指令"两种能力，ACL 等于白分。
+
+       为什么不用 `env MQTT_USER=ui ...` 在启动命令里覆盖：那样密码会出现在
+       ps 的输出里，任何能跑 ps 的人都看得到——修一个安全问题时顺手
+       引入另一个，不划算。 */
+    QString envUser = QString::fromUtf8(qgetenv("MQTT_UI_USER")).trimmed();
+    QString envPass = QString::fromUtf8(qgetenv("MQTT_UI_PASS"));
+    if (envUser.isEmpty()) {
+        envUser = QString::fromUtf8(qgetenv("MQTT_USER")).trimmed();
+        envPass = QString::fromUtf8(qgetenv("MQTT_PASS"));
+    }
     c.mqttFromEnv = !envHost.isEmpty();
 
     c.mqttHost = c.mqttFromEnv ? envHost : s.value("mqtt/host").toString();

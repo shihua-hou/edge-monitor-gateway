@@ -1,4 +1,5 @@
 #include "chatpage.h"
+#include "iostheme.h"
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -12,10 +13,11 @@
 
 ChatPage::ChatPage(QWidget *parent) : QWidget(parent)
 {
-    setStyleSheet(
-        "QLineEdit { background:#1a2332; color:#e6e6e6; border:1px solid #2a3648;"
-        "  border-radius:20px; padding:10px 16px; font-size:14px; }"
-    );
+    /* 输入框做成胶囊形（圆角 = 高度一半），跟 iMessage 一致 */
+    setStyleSheet(QString(
+        "QLineEdit { background:%1; color:%2; border:none;"
+        "  border-radius:20px; padding:11px 18px; font-size:16px; }")
+        .arg(QColor(0x2C,0x2C,0x2E).name()).arg(Ios::label().name()));
 
     QVBoxLayout *root = new QVBoxLayout(this);
     /* 边距和间距都压到最小。7 寸屏只有 600px 高，这一页的固定高度部分
@@ -29,14 +31,19 @@ ChatPage::ChatPage(QWidget *parent) : QWidget(parent)
     // ---- 顶部：标题 + TTS 开关 ----
     QHBoxLayout *top = new QHBoxLayout;
     QLabel *title = new QLabel("语音助手", this);
-    title->setStyleSheet("font-size:16px; font-weight:700; color:#e6e6e6;");
+    title->setFont(Ios::fontHeadline());
+    title->setStyleSheet(QString("color:%1;").arg(Ios::label().name()));
     top->addWidget(title);
     top->addStretch();
     m_statusLabel = new QLabel("空闲", this);
-    m_statusLabel->setStyleSheet("color:#8a94a6; font-size:12px;");
+    m_statusLabel->setFont(Ios::fontFootnote());
+    m_statusLabel->setStyleSheet(QString("color:%1;").arg(Ios::labelSecondary().name(QColor::HexArgb)));
     top->addWidget(m_statusLabel);
     m_ttsToggle = new QPushButton("自动朗读：开", this);
-    m_ttsToggle->setStyleSheet("background:#1e2a3f; border:1px solid #33455f; border-radius:8px; padding:6px 12px; font-size:12px;");
+    m_ttsToggle->setStyleSheet(QString(
+        "QPushButton { background:%1; color:%2; border:none; border-radius:14px;"
+        "  padding:7px 14px; font-size:13px; }")
+        .arg(Ios::fill().name(QColor::HexArgb)).arg(Ios::label().name()));
     connect(m_ttsToggle, &QPushButton::clicked, this, [this]() { setTtsEnabled(!m_ttsOn); });
     top->addWidget(m_ttsToggle);
     root->addLayout(top);
@@ -45,9 +52,9 @@ ChatPage::ChatPage(QWidget *parent) : QWidget(parent)
     m_scroll = new QScrollArea(this);
     m_scroll->setWidgetResizable(true);
     m_scroll->setFrameShape(QFrame::NoFrame);
-    m_scroll->setStyleSheet("background:#0f1520;");
+    m_scroll->setStyleSheet(QString("background:%1; border:none;").arg(Ios::bg().name()));
     QWidget *bubbleContainer = new QWidget;
-    bubbleContainer->setStyleSheet("background:#0f1520;");
+    bubbleContainer->setStyleSheet(QString("background:%1;").arg(Ios::bg().name()));
     m_bubbleLayout = new QVBoxLayout(bubbleContainer);
     m_bubbleLayout->addStretch();
     m_scroll->setWidget(bubbleContainer);
@@ -59,7 +66,8 @@ ChatPage::ChatPage(QWidget *parent) : QWidget(parent)
     root->addWidget(m_scroll, 1);
 
     m_partialLabel = new QLabel("", this);
-    m_partialLabel->setStyleSheet("color:#5aa9ff; font-size:13px; font-style:italic; padding:0 6px;");
+    m_partialLabel->setFont(Ios::fontFootnote());
+    m_partialLabel->setStyleSheet(QString("color:%1; font-style:italic; padding:0 8px;").arg(Ios::blue().name()));
     root->addWidget(m_partialLabel);
 
     // ---- 底部：文字输入 + 麦克风按钮 ----
@@ -89,14 +97,17 @@ ChatPage::ChatPage(QWidget *parent) : QWidget(parent)
 QWidget *ChatPage::makeBubble(const QString &text, bool isUser)
 {
     QFrame *bubble = new QFrame;
+    /* iMessage 配色：自己发的是 systemBlue，对方是深灰。
+       圆角 18 接近 iMessage 气泡的观感。 */
     bubble->setStyleSheet(QString(
-        "background:%1; border-radius:14px; padding:10px 14px;"
-    ).arg(isUser ? "#1e6b4f" : "#1a2332"));
+        "background:%1; border-radius:18px;"
+    ).arg(isUser ? Ios::blue().name() : QColor(0x2C,0x2C,0x2E).name()));
     QVBoxLayout *l = new QVBoxLayout(bubble);
     l->setContentsMargins(14, 10, 14, 10);
     QLabel *lab = new QLabel(text, bubble);
     lab->setWordWrap(true);
-    lab->setStyleSheet("color:#e6e6e6; font-size:14px; background:transparent;");
+    lab->setFont(Ios::fontBody());
+    lab->setStyleSheet(QString("color:%1; background:transparent;").arg(Ios::label().name()));
     lab->setMaximumWidth(420);
     l->addWidget(lab);
 

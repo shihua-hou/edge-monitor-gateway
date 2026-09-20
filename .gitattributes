@@ -1,0 +1,38 @@
+# 行尾规则。
+#
+# 这个仓库的产物要跑在 **Linux 板子**上，而开发在 Windows 上，
+# Git 默认会在检出时把文本文件转成 CRLF。有两类文件一旦带上  就直接坏掉，
+# 而且坏的方式都很难往行尾上想：
+#
+#   *.sh        板子上执行时报 "bad interpreter: /bin/sh^M"
+#               —— 看着像脚本语法错，其实是第一行的 #!/bin/sh 后面多了个 
+#   pinyin.dict 词库按 
+ 切行，每行最后一个候选词会粘上一个 ，
+#               上屏时往输入框里塞一个控制字符
+#
+# 所以这里统一：所有文本按 LF 检出，二进制不做任何转换。
+
+* text=auto eol=lf
+
+# 明确指定（即使 text=auto 猜错也不会被转）
+*.sh            text eol=lf
+*.conf          text eol=lf
+*.c             text eol=lf
+*.h             text eol=lf
+*.cpp           text eol=lf
+*.pro           text eol=lf
+*.py            text eol=lf
+*.js            text eol=lf
+*.html          text eol=lf
+*.md            text eol=lf
+deploy/board/acl-board   text eol=lf
+deploy/board/pinyin.dict text eol=lf
+
+# 二进制：绝不碰
+*.png    binary
+*.jpg    binary
+*.bin    binary
+*.axf    binary
+*.hex    binary
+*.uvprojx binary
+*.uvoptx  binary

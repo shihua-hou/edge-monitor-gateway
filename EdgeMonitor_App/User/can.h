@@ -8,6 +8,7 @@
 #define CAN_ID_STATUS_REPORT   0x100   /* STM32->iMX6ULL 状态上报 */
 #define CAN_ID_IMU_FRAME       0x101   /* STM32->iMX6ULL IMU姿态 */
 #define CAN_ID_MOTOR_STATE     0x102   /* STM32->iMX6ULL 小车运动状态 */
+#define CAN_ID_MOTOR_DISP      0x103   /* STM32->iMX6ULL 左右轮**有符号位移** */
 #define CAN_ID_CTRL_CMD        0x110   /* iMX6ULL->STM32 控制命令 */
 #define CAN_ID_PARAM_SET       0x111   /* iMX6ULL->STM32 参数配置 */
 /* v2.1: App 侧诊断桩用独立 ID，不与 0x110 控制命令共用同一 ID 靠首字节取值区分
@@ -38,6 +39,17 @@
 /* 急停：直接拉低 TB6612 的 STBY，输出进高阻。
    不走 PWM=0 这条路——PWM=0 依赖定时器和固件都是好的，而急停恰恰要在
    "固件可能不好"的时候生效。STBY 是纯硬件通路。 */
+/* 坦克式差速：p1=左轮 p2=右轮，取值 0~200 映射到 -100~+100 %。
+   为什么需要它：路径跟踪（纯追踪）要求每一拍都能连续调整左右轮速差，
+   而 ACT_ON/LEFT/RIGHT 这种离散命令只能"直走或原地转"，
+   拿它们拼出来的轨迹会一摊一摊地摆。
+
+   为什么用 0~200 而不是直接用有符号字节：协议里 p1/p2 一直是无符号语义
+   （速度百分比），改成有符号会让旧解析器对同一个字节得出完全不同的值，
+   而且不会报错。偏移编码把兼容风险限在新动作码内部。 */
+#define ACT_TANK        0x09
+#define ACT_TANK_BIAS   100    /* p 值减去它就是实际百分比 */
+
 #define ACT_ESTOP       0x07   /* 急停 */
 #define ACT_RESUME      0x08   /* 解除急停 */
 

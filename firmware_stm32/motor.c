@@ -115,6 +115,11 @@
 #define RUNAWAY_RPM     (MOTOR_MAX_RPM * 3 / 2)   /* 300 RPM */
 #define RUNAWAY_TICKS   5                          /* 连续 5 拍 = 100ms 才算数，避开单拍毛刺 */
 
+/* 坦克指令超时。上位机的路径跟踪控制器是 5Hz（跟着 0x102 上报节奏），
+   500ms 允许丢两拍；CAN 抖一下不至于让车一顿一顿，
+   但上位机真挂了最多半秒就停。 */
+#define TANK_TIMEOUT_MS 500
+
 static TIM_HandleTypeDef s_pwm;
 static TIM_HandleTypeDef s_enc_l, s_enc_r;
 static u8  s_ready   = 0;
@@ -132,6 +137,15 @@ typedef struct {
        现在每拍先乘后除并把余数留到下一拍，精度 1mm 且长期不累计误差。 */
     u32 odom_mm;
     u32 odom_rem;      /* 上一拍除不尽的余数，单位是"计数×mm" */
+
+    /* 有符号位移。和 odom_mm 是**两个不同的量**，不要混用：
+         odom_mm  路程（里程表）——只增不减，倒车也变大
+         disp_mm  位移（航迹推算用）——倒车会变小，原地转向时左右互相抵消
+       上位机做轨迹推算必须用后者：原地转一圈左轮倒转右轮正转，
+       两边**路程**都在增加，平均下来就成了"往前走了一段"，
+       于是每转一次弯轨迹就凭空往前窜——这个坑实打实踩过。 */
+    s32 disp_mm;
+    s32 disp_rem;
 } Wheel_t;
 
 static Wheel_t s_l, s_r;
@@ -139,6 +153,8 @@ static u16 s_turn_left_ms = 0;     /* 定时转向剩余时间 */
 static u8  s_runaway_cnt = 0;
 static u32 s_last_ms = 0;          /* 上一拍的时刻，用于算实际周期 */
 static u8  s_faulted = 0;          /* 触发过飞车保护，需要人工解除 */
+static u8  s_tank_mode = 0;        /* 当前处于坦克（自主跟踪）模式 */
+static u32 s_tank_ms = 0;          /* 最后一条坦克指令的时刻 */
 
 /* ---------- 小工具 ---------- */
 static s32 clamp32(s32 v, s32 lo, s32 hi)
@@ -328,6 +344,18 @@ void Motor_SetTargetRpm(s16 left, s16 right)
     s_turn_left_ms = 0;
 }
 
+void Motor_SetTank(s8 left_pct, s8 right_pct)
+{
+    if (!s_ready) return;
+    s_tank_mode = 1;
+    s_tank_ms = HAL_GetTick();
+    Motor_SetTargetRpm((s16)((s32)MOTOR_MAX_RPM * left_pct  / 100),
+                       (s16)((s32)MOTOR_MAX_RPM * right_pct / 100));
+    /* SetTargetRpm 里会把 s_turn_left_ms 清掉，但它不知道坦克模式，
+       所以标志在这里重新置上——顺序反了就相当于没加超时保护。 */
+    s_tank_mode = 1;
+}
+
 void Motor_Turn(s16 left_rpm, s16 right_rpm, u16 ms)
 {
     Motor_SetTargetRpm(left_rpm, right_rpm);
@@ -336,6 +364,7 @@ void Motor_Turn(s16 left_rpm, s16 right_rpm, u16 ms)
 
 void Motor_Stop(void)
 {
+    s_tank_mode = 0;
     s_l.target_rpm = s_r.target_rpm = 0;
     s_l.integ = s_r.integ = 0;
     s_turn_left_ms = 0;
@@ -365,6 +394,15 @@ u8 Motor_IsRunning(void)
     return (s_l.target_rpm || s_r.target_rpm || s_l.rpm || s_r.rpm) ? 1 : 0;
 }
 
+/* 有符号位移，单位 mm。给上位机做航迹推算用——
+   比它自己拿 5Hz 的转速去积分准得多：这里每个编码器计数都不会漏，
+   而转速是采样出来的，两次采样之间的加减速全看不见。 */
+void Motor_GetDisp(s32 *disp_l_mm, s32 *disp_r_mm)
+{
+    if (disp_l_mm) *disp_l_mm = s_l.disp_mm;
+    if (disp_r_mm) *disp_r_mm = s_r.disp_mm;
+}
+
 void Motor_GetState(s16 *rpm_l, s16 *rpm_r, u32 *odom_l_cm, u32 *odom_r_cm)
 {
     if (rpm_l) *rpm_l = s_l.rpm;
@@ -390,6 +428,17 @@ static void wheel_tick(Wheel_t *w, TIM_HandleTypeDef *enc, u8 is_left, u32 dt_ms
     num = (u32)((d >= 0) ? d : -d) * WHEEL_CIRC_MM + w->odom_rem;
     w->odom_mm  += num / ENC_CNT_PER_REV;
     w->odom_rem  = num % ENC_CNT_PER_REV;
+
+    /* 有符号位移，同样带余数累加。
+       C 的整数除法向零截断、余数与被除数同号，所以正负两个方向的
+       余数各自正确进位，长时间来回走**不会**积累系统性偏差——
+       这正是不能简单写成 disp_mm += d*CIRC/CNT 的原因：
+       那样每一拍都丢掉不足一个计数的零头，倒车再开回来就对不上了。 */
+    {
+        s32 n = (s32)d * WHEEL_CIRC_MM + w->disp_rem;
+        w->disp_mm  += n / (s32)ENC_CNT_PER_REV;
+        w->disp_rem  = n % (s32)ENC_CNT_PER_REV;
+    }
 
     /* 计数 -> RPM，用**实际经过的时间**而不是假设的 TICK_MS。
      *
@@ -435,6 +484,13 @@ void Motor_Tick(void)
         s_l.last_cnt = (u16)__HAL_TIM_GET_COUNTER(&s_enc_l);
         s_r.last_cnt = (u16)__HAL_TIM_GET_COUNTER(&s_enc_r);
         return;
+    }
+
+    /* 坦克指令超时：自主跟踪时上位机必须持续发指令，指令流断了就停。
+       放在最前面：该停的话本拍就不应该再跑 PI 去驱动电机。 */
+    if (s_tank_mode && (HAL_GetTick() - s_tank_ms > TANK_TIMEOUT_MS)) {
+        printf("motor: tank cmd timeout, stop\r\n");
+        Motor_Stop();
     }
 
     /* 定时转向倒计时。放在闭环之前：这一拍就该停的话，本拍就不要再驱动了 */

@@ -3,10 +3,16 @@
 
 #include <QWidget>
 #include <QPointer>
+#include <QStringList>
+
+#include "pinyinime.h"
 
 QT_BEGIN_NAMESPACE
 class QVBoxLayout;
+class QHBoxLayout;
 class QLineEdit;
+class QPushButton;
+class QLabel;
 QT_END_NAMESPACE
 
 /* VirtualKeyboard - 触摸屏软键盘。
@@ -51,6 +57,14 @@ protected:
 private:
     enum Layer { Lower, Upper, Symbol };
 
+    /* 中文态下按键先进"编码缓冲"，不直接发给输入框——
+       这是拼音输入和直接打字最本质的区别：字母是过程，汉字才是结果。 */
+    void setChinese(bool on);
+    void updateCandidates();
+    void commitCandidate(int index);
+    void clearComposing();
+    bool handleChineseKey(const QString &label);
+
     void buildRows();
     void rebuildKeys();
     void addRow(const QStringList &keys);
@@ -61,6 +75,18 @@ private:
 
     QVBoxLayout *m_rows;
     Layer m_layer = Lower;
+
+    /* ---- 中文输入 ---- */
+    bool        m_chinese = false;
+    QString     m_composing;          /* 已输入、还没上屏的拼音 */
+    QStringList m_cands;              /* 当前候选 */
+    PinyinIME   m_ime;
+    bool        m_imeTried = false;   /* 词库只尝试加载一次，失败不重复刷日志 */
+
+    QWidget     *m_candBar;           /* 候选条：编码 + 候选按钮 */
+    QHBoxLayout *m_candLayout;
+    QLabel      *m_composeLabel;
+    QVector<QPushButton *> m_candBtns;
     QPointer<QWidget> m_target;   // 当前正在输入的控件；QPointer 防止页面析构后变野指针
 };
 

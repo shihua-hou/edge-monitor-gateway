@@ -1,0 +1,59 @@
+# ============================================================
+# 板载 broker 的主题权限表
+#
+# 在这之前全系统共用一个账号 em，没有 ACL——任何拿到这个账号的客户端
+# 都能往 monitor/+/cmd 发控制指令，也能读走 config 里的第三方密钥。
+# 车和手机在同一个园区 WiFi 上，这个前提站不住。
+#
+# 按**数据流向**分账号，而不是按"人"分：
+#   em     采集侧：只往上发数据，只接收指令        （网关 / GPS / OTA 服务）
+#   ui     操作侧：只读数据，可以发指令            （板子上的 Qt 界面）
+#   bridge 转发侧：读数据送出去，把外面的指令送进来（虚拟机上的桥接）
+#
+# 为什么 em 和 ui 必须分开：它们的读写方向**正好相反**。
+# 合在一起的话，这个账号就同时具备了"发数据"和"发指令"两种能力——
+# 那和没有 ACL 只差一层窗户纸：任何一个泄露的采集端凭据都能开车。
+#
+# mosquitto 的 ACL 语义提醒：
+#   - 没有匹配到任何一条规则 = 拒绝，所以漏写一条的表现是"某个面板
+#     一直空着"而其它都正常，很难联想到权限。加新主题时记得回来补。
+#   - topic 后面的 read/write 是**站在客户端角度**说的：
+#     write = 客户端可以 publish，read = 客户端可以 subscribe。
+# ============================================================
+
+# ---- 采集侧：网关 / GPS / OTA 服务 ----
+user em
+topic write monitor/+/data/#
+topic write monitor/online/+
+topic write monitor/+/ota/progress
+topic write monitor/+/ota/status
+topic read  monitor/+/cmd
+topic read  monitor/+/config/#
+topic read  monitor/+/ota/cmd
+
+# ---- 操作侧：板子上的 Qt 界面 ----
+# 它显示数据、也从控制页和路线回放发指令，但**不该能伪造遥测数据**。
+user ui
+topic read  monitor/+/data/#
+topic read  monitor/online/+
+topic read  monitor/+/ota/progress
+topic read  monitor/+/ota/status
+topic write monitor/+/cmd
+# 语音密钥是**发给这台设备的界面**用的，它当然要能收到
+#（要挡的是桥接和 Web，不是本机界面）。
+# 少了这条会很隐蔽：界面订阅 monitor/+/config/# 被拒 -> SUBACK 失败 ->
+# 客户端断开重连，表现是"界面连上一下就掉、整屏没数据"，
+# 看着完全像网络问题，其实是权限。
+topic read  monitor/+/config/#
+
+# ---- 转发侧：虚拟机上的桥接 ----
+# 注意它读不到 monitor/+/config/#：第三方密钥没有任何理由离开这块板子。
+# 桥接只把遥测送出去、把指令送进来。
+user bridge
+topic read  monitor/+/data/#
+topic read  monitor/online/+
+topic read  monitor/+/ota/progress
+topic read  monitor/+/ota/status
+topic write monitor/+/cmd
+topic write monitor/+/config/#
+topic write monitor/+/ota/cmd

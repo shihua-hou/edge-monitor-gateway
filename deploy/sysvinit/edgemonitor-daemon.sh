@@ -60,6 +60,18 @@ export HOME
 export QT_QPA_FONTDIR=/usr/share/fonts/ttf
 export QT_QPA_PLATFORM=linuxfb:tty=/dev/fb0
 export QT_QPA_FB_TSLIB=1
+
+# 系统输入法。板子的 rootfs 自带 Qt VirtualKeyboard（含拼音插件），
+# 再补一个 QML 模块就能用——比自绘键盘多出中文输入，而地图搜索没中文没法用。
+# 不设这个变量时，界面会退回自绘键盘（仅英文/符号），不会起不来。
+# 系统输入法（Qt VirtualKeyboard）试过了，**不用**：
+#   - 它是 QtQuick 的独立窗口，在 600px 高的屏上几乎占满，挡住正文内容
+#   - 语言列表一长串，而这台设备只需要中/英
+#   - 选了简体中文候选词出不来（插件、词库、布局都在，解码器没被激活）
+# 结论是杀鸡用牛刀还没杀成。改回自绘键盘 + 自己的拼音候选，
+# 见 imx6ull_ui/virtualkeyboard.cpp 和 pinyinime.cpp。
+# 想再试官方那套就把下面这行取消注释：
+#export QT_IM_MODULE=qtvirtualkeyboard
 # 这两种屏（fbset timings 第三列为 220/213）用 tslib 反而不对，
 # 照抄 /etc/profile 里的判断，保持和厂家环境一致
 case "$(fbset 2>/dev/null | grep -E 'timings' | awk '{print $3}')" in
@@ -85,6 +97,14 @@ load_env() {
         # 网页上只显示"已触发"，得翻到板子日志才看得到真正原因
         export MQTT_HOST MQTT_USER MQTT_PASS DEVICE_ID
         export OTA_FW_DIR OTA_UDS_TOOL
+        # NTRIP（CORS 差分）账号。gps_mqtt 内置的 NTRIP 客户端要用。
+        # 不配的话它只打印一行"差分未启用"，照常出单点解，不会崩。
+        export NTRIP_HOST NTRIP_PORT NTRIP_MOUNT NTRIP_USER NTRIP_PASS
+        # 手机遥控页的访问令牌。**不配就是任何人都能开车**——
+        # 车和手机在同一个 WiFi 上，扫到 8085 端口打开就能操控。
+        export CTRL_TOKEN
+        # 界面和桥接各自的 broker 账号。按"读写方向"分开，见 deploy/board/acl-board。
+        export MQTT_UI_USER MQTT_UI_PASS MQTT_BRIDGE_PASS
     fi
 }
 load_env
@@ -419,8 +439,17 @@ start_if_dead() {
 LOCK_FILE=/tmp/edgemonitor-daemon.lock
 if command -v flock >/dev/null 2>&1; then
     exec 9>"$LOCK_FILE"
-    if ! flock -n 9; then
-        echo "$(date '+%F %T') 已经有一个 EdgeMonitor 守护进程在运行，本次启动退出。"
+    # **等锁，而不是拿不到就退出**（-w 20 而非 -n）。
+    #
+    # 原来用 -n 的问题出在"重启"这个最常见的动作上：kill 掉旧实例之后
+    # 立刻启动新的，而旧实例还没退完、锁还没释放，新实例当场退出——
+    # 结果是一个都不剩，整套服务全停。踩过三次，每次都要人工再起一遍。
+    #
+    # 等待不会削弱单实例保护：真有另一个在正常运行，20 秒也等不到，
+    # 照样退出并提示；只是把"重启时的竞态"和"确实已经有一个在跑"
+    # 这两种情况区分开了——它们该有不同的处理方式。
+    if ! flock -w 20 9; then
+        echo "$(date '+%F %T') 等了 20 秒仍拿不到锁，说明确实有另一个守护进程在正常运行，本次启动退出。"
         echo "  想重启的话：ps -ef | grep [e]dgemonitor-daemon   然后 kill 掉旧的"
         exit 1
     fi
@@ -441,6 +470,17 @@ while true; do
     network_watchdog   # 探测/自愈网络 + 首次联网后校时（内部自己控制频率）
     # 每 30 轮（约 5 分钟）查一次日志大小。查得太勤没必要，日志长不了那么快
     [ $((tick % 30)) -eq 0 ] && rotate_logs
+    # 板载 MQTT broker。**必须排在所有 MQTT 客户端前面**：
+    # 客户端自己会重连，所以顺序错了最终也能连上，但开机那几秒日志里
+    # 会刷一串"连接被拒绝"，看着像故障。让它先起来更干净。
+    #
+    # 为什么 broker 在板子上：发布方(gateway_mqtt/gps_mqtt)和订阅方(Qt 界面)
+    # 本来就都在这块板子上，原先却要绕一圈到虚拟机的 broker——
+    # 虚拟机一关，板子自己的界面就不刷新、控制页也发不出指令。
+    # 搬到本地之后，车的自洽性不再依赖任何上位机；
+    # Web 大屏那边由虚拟机上的 broker 桥接过来取数（浏览器只能走
+    # WebSocket，而板子这个交叉编译版没链 libwebsockets）。
+    start_if_dead mosquitto      "$BIN_DIR/mosquitto"      -c "$BIN_DIR/mosquitto.conf"
     start_if_dead gateway_mqtt   "$BIN_DIR/gateway_mqtt"   can0
     start_if_dead video_v4l2     "$BIN_DIR/video_v4l2"     /dev/video2 8081
     start_if_dead edgemonitor_ui "$BIN_DIR/edgemonitor_ui" -platform linuxfb
@@ -450,7 +490,24 @@ while true; do
     # 之前默认注释掉，结果网页点"开始升级"毫无反应——没有任何一端会报错，
     # 因为消息发出去了、只是没人订阅。默认启用更符合预期
     start_if_dead ota_service    "$BIN_DIR/ota_service"    can0
-    # GPS 按需启用（没接 GPS 模块时开着只会刷串口读取失败）
-    # start_if_dead gps_mqtt     "$BIN_DIR/gps_mqtt"       /dev/ttymxc2
+    # RTK/GNSS：OEM700 走 USB，枚举出 4 个 CDC-ACM 口，只有一个吐 NMEA
+    # （另外几个是模块日志/Lua REPL、RTCM 二进制观测量）。
+    #
+    # **不再写死 ttyACM3**：拔了再插之后编号会整体后移（旧节点还没回收，
+    # 新的从 ACM4 起），现场表现是"插回去就是不出数据"而设备明明枚举成功了。
+    # 不带参数启动时 gps_mqtt 自己挨个口听 2 秒，谁吐 $..GGA 就用谁。
+    # 串口没找到也不退出，每 5 秒重找一次，模块拔了再插能自己恢复。
+    start_if_dead gps_mqtt       "$BIN_DIR/gps_mqtt"
+    # 手机遥控：直接在板子上开 HTTP，收到指令直写 CAN。
+    # **不经过 MQTT/broker**——"车开着、人就在旁边、想让它动一下"
+    # 这个场景不该依赖机房里的虚拟机。
+    # 第二个参数是 token，空 = 内网免验证（要收紧就填一个）。
+    # 第二个参数是访问令牌，从 /etc/edgemonitor.env 的 CTRL_TOKEN 来。
+    # 令牌不写在这里也不进仓库：这个脚本是要提交的，而 git 历史删不干净。
+    #
+    # 令牌走 URL 查询串（手机上存成书签即可），页面本身不带令牌、
+    # 也不把它注入到 HTML 里——所以"页面能打开"不等于"能开车"。
+    # 留空则退回无验证模式（和以前一样），不会因为没配就起不来。
+    start_if_dead mobile_ctrl    "$BIN_DIR/mobile_ctrl"    8085 "$CTRL_TOKEN" can0
     sleep "$CHECK_INTERVAL"
 done

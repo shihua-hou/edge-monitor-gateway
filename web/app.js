@@ -114,6 +114,13 @@ function applyTheme(t) {
   document.body.setAttribute('data-theme', t);
   document.getElementById('themeSwitch').classList.toggle('on', t === 'light');
   try { localStorage.setItem('em_theme', t); } catch (e) {}
+
+  /* canvas 画上去的像素不会跟着 CSS 变量走——DOM 那部分换主题是立刻生效的，
+     图表却会停在旧配色里，直到下一帧数据到来才重画。
+     两种颜色并存的那几秒看着就像渲染坏了，所以这里主动重绘一次。
+     try 包起来：切主题时这些图表未必都已经初始化（比如还没进过历史页）。 */
+  try { drawDvChart(); } catch (e) {}
+  try { drawHistChart(); } catch (e) {}
 }
 function toggleTheme() {
   const cur = document.body.getAttribute('data-theme');
@@ -265,9 +272,19 @@ function removeDevice(id) {
 /* ============================================================
  * 语音助手密钥下发
  *
- * 用 retained 消息：设备重启、或者晚于这次下发才上线，都能立刻拿到配置，
- * 不用你再点一次。代价是密钥会一直存在 broker 上——所以给了"清除"按钮
- * （发一条空的 retained 消息把它顶掉）。
+ * ── 为什么不用 retained ──
+ * 原来用 retained：设备重启、或者晚于下发才上线，都能自动拿到配置。
+ * 代价是**密钥会一直明文躺在 broker 上**——任何能连上 broker 的客户端
+ * 订阅一下就能读走。实测确认过：订阅 monitor/# 立刻收到完整的
+ * appId / apiKey / apiSecret。
+ *
+ * 而这个代价换来的好处其实很小：设备收到后就写进自己的 QSettings 了
+ * （见 mainwindow.cpp 的 config/voice 分支），断电重启照样在。
+ * retained 唯一多出来的能力，是"下发时设备恰好离线也能补上"——
+ * 为这一点便利让密钥长期驻留在一个多客户端共享的 broker 上，不划算。
+ *
+ * 现在：非 retained 下发，设备离线时**直接拒绝并说清楚**，
+ * 而不是发出去然后让人以为成功了。
  * ============================================================ */
 function voiceConfigTopic() {
   return currentDevice ? 'monitor/' + currentDevice + '/config/voice' : null;
@@ -291,7 +308,15 @@ function pushVoiceConfig() {
     stat.textContent = 'APPID / APIKey / APISecret 三项都要填';
     return;
   }
-  client.publish(topic, JSON.stringify(cfg), { retain: true, qos: 1 });
+  /* 设备离线就别发。非 retained 的消息没人接就是没了——
+     发出去再显示"已下发"是在骗人，而这种谎最难发现：
+     界面一切正常，只有到现场按语音键才发现没生效。 */
+  if (!deviceOnline) {
+    stat.textContent = '设备当前离线，密钥不会送达；等它上线后再点一次';
+    toast('未下发', '设备离线。密钥改为非 retained 下发，离线时不会被补发', 'warn');
+    return;
+  }
+  client.publish(topic, JSON.stringify(cfg), { retain: false, qos: 1 });
   stat.textContent = '已下发到 ' + deviceLabel(currentDevice) +
     '（' + new Date().toLocaleTimeString('zh-CN', { hour12:false }) + '）';
   toast('已下发', '设备收到后会自动保存并生效', 'success');
@@ -1254,6 +1279,48 @@ function smoothPath(c, pts) {
 }
 
 // 画一条带面积填充的曲线，并在右端标出当前值
+/* 图表配色随主题走。
+ *
+ * 原来这些颜色全是写死的暗色值——线用 #35d6ff、网格 rgba(77,159,255,.10)、
+ * 坐标文字 rgba(138,176,220,.75)。切到日间模式之后：
+ *   网格 10% 的淡蓝铺在白底上等于没有，图表失去参照；
+ *   坐标文字和线条都太淡，读数要凑近看。
+ *
+ * CSS 变量管不到 canvas —— canvas 里画什么颜色是 JS 一笔笔指定的，
+ * 这是"换主题"最容易漏掉的一块：DOM 部分早就变了，图表还留在旧配色里。
+ *
+ * 两套值的取法：暗色用亮色在深底上发光；浅色反过来，用足够深的颜色
+ * 压在白底上，并把网格的透明度提上来（浅底上同样的透明度看起来更淡）。
+ */
+function chartTheme() {
+  const light = document.body.getAttribute('data-theme') === 'light';
+  return light ? {
+    temp:  '#0b6bcb',
+    humi:  '#b45309',
+    grid:  'rgba(17,24,39,.09)',
+    axis:  'rgba(17,24,39,.22)',
+    label: 'rgba(75,85,99,.95)',
+    cross: 'rgba(17,24,39,.35)',
+    tipBg: 'rgba(255,255,255,.97)',
+    tipBd: 'rgba(11,107,203,.45)',
+    err:   'rgba(200,30,58,.9)',
+    hi:    '#c81e3a', lo: '#0b6bcb',
+    glow:  0            /* 白底上再加辉光只会糊成一团 */
+  } : {
+    temp:  '#35d6ff',
+    humi:  '#ffab3d',
+    grid:  'rgba(77,159,255,.10)',
+    axis:  'rgba(77,159,255,.35)',
+    label: 'rgba(138,176,220,.75)',
+    cross: 'rgba(200,225,255,.5)',
+    tipBg: 'rgba(6,18,38,.94)',
+    tipBd: 'rgba(77,159,255,.5)',
+    err:   'rgba(255,138,138,.85)',
+    hi:    '#ff4d6d', lo: '#4d9fff',
+    glow:  6
+  };
+}
+
 function drawSeries(c, arr, min, max, W, H, color, unit, side) {
   if (arr.length < 2) return;
   const pts = arr.map((v, i) => ({ x: plotX(i, arr.length, W), y: plotY(v, min, max, H) }));
@@ -1269,7 +1336,7 @@ function drawSeries(c, arr, min, max, W, H, color, unit, side) {
 
   smoothPath(c, pts);
   c.strokeStyle = color; c.lineWidth = 1.8;
-  c.shadowColor = color; c.shadowBlur = 6;
+  c.shadowColor = color; c.shadowBlur = chartTheme().glow;
   c.stroke();
   c.shadowBlur = 0;
 
@@ -1286,7 +1353,7 @@ function drawSeries(c, arr, min, max, W, H, color, unit, side) {
   // 两条曲线的最新点可能挨得很近，气泡一上一下错开，避免叠在一起
   const bx = Math.min(last.x + 7, W - tw - 8);
   const by = side === 'left' ? last.y - 8 : last.y + 16;
-  c.fillStyle = 'rgba(6,18,38,.9)';
+  c.fillStyle = chartTheme().tipBg;
   c.fillRect(bx - 3, by - 9, tw + 6, 14);
   c.strokeStyle = color + '88'; c.lineWidth = 1;
   c.strokeRect(bx - 3, by - 9, tw + 6, 14);
@@ -1321,7 +1388,7 @@ function renderTrendChart(canvas, hoverIdx) {
   const [hLo, hHi] = axisRange(humiData, 0, 100);
 
   // 网格：横线跟左轴刻度对齐，竖线按时间等分
-  c.strokeStyle = 'rgba(77,159,255,.10)'; c.lineWidth = 1;
+  c.strokeStyle = chartTheme().grid; c.lineWidth = 1;
   const step = niceStep(tHi - tLo, 3);
   for (let v = Math.ceil(tLo / step) * step; v <= tHi; v += step) {
     const y = plotY(v, tLo, tHi, H);
@@ -1333,12 +1400,12 @@ function renderTrendChart(canvas, hoverIdx) {
     c.beginPath(); c.moveTo(x, PAD.t); c.lineTo(x, H - PAD.b); c.stroke();
   }
   // 坐标轴
-  c.strokeStyle = 'rgba(77,159,255,.35)';
+  c.strokeStyle = chartTheme().axis;
   c.beginPath(); c.moveTo(PAD.l, PAD.t); c.lineTo(PAD.l, H - PAD.b); c.lineTo(W - PAD.r, H - PAD.b); c.stroke();
 
   // 时间轴：最右是"现在"，往左推算每个采样点的时刻
   c.font = '10px Bahnschrift, Consolas, monospace';
-  c.fillStyle = 'rgba(138,176,220,.75)';
+  c.fillStyle = chartTheme().label;
   c.textAlign = 'center'; c.textBaseline = 'top';
   const n = tempData.length;
   if (n > 1) {
@@ -1352,25 +1419,25 @@ function renderTrendChart(canvas, hoverIdx) {
     }
   }
 
-  drawSeries(c, tempData, tLo, tHi, W, H, '#35d6ff', '℃', 'left');
-  drawSeries(c, humiData, hLo, hHi, W, H, '#ffab3d', '%', 'right');
+  drawSeries(c, tempData, tLo, tHi, W, H, chartTheme().temp, '℃', 'left');
+  drawSeries(c, humiData, hLo, hHi, W, H, chartTheme().humi, '%', 'right');
 
   // 悬停十字线 + 该时刻两个数值
   if (hoverIdx >= 0 && hoverIdx < n) {
     const x = plotX(hoverIdx, n, W);
-    c.strokeStyle = 'rgba(200,225,255,.5)'; c.setLineDash([3, 3]);
+    c.strokeStyle = chartTheme().cross; c.setLineDash([3, 3]);
     c.beginPath(); c.moveTo(x, PAD.t); c.lineTo(x, H - PAD.b); c.stroke();
     c.setLineDash([]);
     const lines = ['温度 ' + tempData[hoverIdx].toFixed(1) + '℃', '湿度 ' + humiData[hoverIdx].toFixed(1) + '%'];
     c.font = '11px Bahnschrift, Consolas, monospace';
     const bw = Math.max(...lines.map(s => c.measureText(s).width)) + 12;
     const bx = Math.min(x + 8, W - bw - 4);
-    c.fillStyle = 'rgba(6,18,38,.94)';
+    c.fillStyle = chartTheme().tipBg;
     c.fillRect(bx, PAD.t + 2, bw, 32);
-    c.strokeStyle = 'rgba(77,159,255,.5)'; c.strokeRect(bx, PAD.t + 2, bw, 32);
+    c.strokeStyle = chartTheme().tipBd; c.strokeRect(bx, PAD.t + 2, bw, 32);
     c.textAlign = 'left'; c.textBaseline = 'top';
-    c.fillStyle = '#35d6ff'; c.fillText(lines[0], bx + 6, PAD.t + 6);
-    c.fillStyle = '#ffab3d'; c.fillText(lines[1], bx + 6, PAD.t + 19);
+    c.fillStyle = chartTheme().temp; c.fillText(lines[0], bx + 6, PAD.t + 6);
+    c.fillStyle = chartTheme().humi; c.fillText(lines[1], bx + 6, PAD.t + 19);
   }
 }
 
@@ -1467,11 +1534,11 @@ function drawHistChart() {
     }[histState] || ['暂无历史数据', ''];
     c.textAlign = 'center'; c.textBaseline = 'middle';
     c.font = '600 13px "Segoe UI", sans-serif';
-    c.fillStyle = histState === 'error' ? 'rgba(255,138,138,.85)' : 'rgba(138,176,220,.75)';
+    c.fillStyle = histState === 'error' ? chartTheme().err : chartTheme().label;
     c.fillText(TIP[0], W / 2, H / 2 - (TIP[1] ? 9 : 0));
     if (TIP[1]) {
       c.font = '11px "Segoe UI", sans-serif';
-      c.fillStyle = 'rgba(138,176,220,.5)';
+      c.fillStyle = chartTheme().label;
       c.fillText(TIP[1], W / 2, H / 2 + 11);
     }
     return;
@@ -1484,7 +1551,7 @@ function drawHistChart() {
   const xAt = ts => PAD.l + ((ts - t0) / Math.max(t1 - t0, 1)) * (W - PAD.l - PAD.r);
 
   // 网格 + Y 轴刻度
-  c.strokeStyle = 'rgba(77,159,255,.10)'; c.lineWidth = 1;
+  c.strokeStyle = chartTheme().grid; c.lineWidth = 1;
   c.font = '10px Bahnschrift, Consolas, monospace';
   c.textAlign = 'right'; c.textBaseline = 'middle';
   const step = niceStep(hi - lo, 4);
@@ -1492,15 +1559,15 @@ function drawHistChart() {
     const y = plotY(v, lo, hi, H);
     if (y < PAD.t || y > H - PAD.b) continue;
     c.beginPath(); c.moveTo(PAD.l, y); c.lineTo(W - PAD.r, y); c.stroke();
-    c.fillStyle = 'rgba(53,214,255,.75)';
+    c.fillStyle = chartTheme().temp;
     c.fillText(String(+v.toFixed(1)), PAD.l - 5, y);
   }
-  c.strokeStyle = 'rgba(77,159,255,.35)';
+  c.strokeStyle = chartTheme().axis;
   c.beginPath(); c.moveTo(PAD.l, PAD.t); c.lineTo(PAD.l, H - PAD.b); c.lineTo(W - PAD.r, H - PAD.b); c.stroke();
 
   // X 轴时间刻度，格式随跨度变
   c.textAlign = 'center'; c.textBaseline = 'top';
-  c.fillStyle = 'rgba(138,176,220,.75)';
+  c.fillStyle = chartTheme().label;
   for (let i = 0; i <= 5; i++) {
     const ts = t0 + (i / 5) * (t1 - t0);
     const d = new Date(ts);
@@ -1513,17 +1580,17 @@ function drawHistChart() {
   // 面积 + 曲线
   const pts = histPoints.map(p => ({ x: xAt(p.ts), y: plotY(p.v, lo, hi, H) }));
   const grad = c.createLinearGradient(0, PAD.t, 0, H - PAD.b);
-  grad.addColorStop(0, '#35d6ff44'); grad.addColorStop(1, '#35d6ff03');
+  grad.addColorStop(0, chartTheme().temp + '44'); grad.addColorStop(1, chartTheme().temp + '03');
   smoothPath(c, pts);
   c.lineTo(pts[pts.length-1].x, H - PAD.b); c.lineTo(pts[0].x, H - PAD.b); c.closePath();
   c.fillStyle = grad; c.fill();
   smoothPath(c, pts);
-  c.strokeStyle = '#35d6ff'; c.lineWidth = 1.6;
-  c.shadowColor = '#35d6ff'; c.shadowBlur = 5; c.stroke(); c.shadowBlur = 0;
+  c.strokeStyle = chartTheme().temp; c.lineWidth = 1.6;
+  c.shadowColor = chartTheme().temp; c.shadowBlur = chartTheme().glow; c.stroke(); c.shadowBlur = 0;
 
   // 最大/最小值标注：回看一段历史时，最关心的往往就是这两个极值出现在什么时候
   const iMax = vals.indexOf(Math.max(...vals)), iMin = vals.indexOf(Math.min(...vals));
-  [[iMax, '#ff4d6d', '最高'], [iMin, '#4d9fff', '最低']].forEach(([i, color, tag]) => {
+  [[iMax, chartTheme().hi, '最高'], [iMin, chartTheme().lo, '最低']].forEach(([i, color, tag]) => {
     const p = pts[i];
     c.beginPath(); c.arc(p.x, p.y, 3, 0, Math.PI * 2); c.fillStyle = color; c.fill();
     const txt = tag + ' ' + vals[i].toFixed(1) + unit;
@@ -1537,7 +1604,7 @@ function drawHistChart() {
   // 悬停读数
   if (histHover >= 0 && histHover < histPoints.length) {
     const p = pts[histHover], d = histPoints[histHover];
-    c.strokeStyle = 'rgba(200,225,255,.45)'; c.setLineDash([3,3]);
+    c.strokeStyle = chartTheme().cross; c.setLineDash([3,3]);
     c.beginPath(); c.moveTo(p.x, PAD.t); c.lineTo(p.x, H - PAD.b); c.stroke();
     c.setLineDash([]);
     const dt = new Date(d.ts);
@@ -1546,11 +1613,11 @@ function drawHistChart() {
     c.font = '11px Bahnschrift, Consolas, monospace';
     const bw = Math.max(...lines.map(s => c.measureText(s).width)) + 12;
     const bx = Math.min(p.x + 8, W - bw - 4);
-    c.fillStyle = 'rgba(6,18,38,.94)'; c.fillRect(bx, PAD.t + 2, bw, 32);
-    c.strokeStyle = 'rgba(77,159,255,.5)'; c.strokeRect(bx, PAD.t + 2, bw, 32);
+    c.fillStyle = chartTheme().tipBg; c.fillRect(bx, PAD.t + 2, bw, 32);
+    c.strokeStyle = chartTheme().tipBd; c.strokeRect(bx, PAD.t + 2, bw, 32);
     c.textAlign = 'left'; c.textBaseline = 'top';
-    c.fillStyle = '#35d6ff'; c.fillText(lines[0], bx + 6, PAD.t + 6);
-    c.fillStyle = 'rgba(138,176,220,.9)'; c.fillText(lines[1], bx + 6, PAD.t + 19);
+    c.fillStyle = chartTheme().temp; c.fillText(lines[0], bx + 6, PAD.t + 6);
+    c.fillStyle = chartTheme().label; c.fillText(lines[1], bx + 6, PAD.t + 19);
   }
 }
 
@@ -1916,12 +1983,12 @@ function drawImuChart() {
     c.fillStyle = 'rgba(138,176,220,.8)';
     c.fillText(v + '°', PAD.l - 5, y);
   }
-  c.strokeStyle = 'rgba(77,159,255,.35)';
+  c.strokeStyle = chartTheme().axis;
   c.beginPath(); c.moveTo(PAD.l, PAD.t); c.lineTo(PAD.l, H - PAD.b); c.lineTo(W - PAD.r, H - PAD.b); c.stroke();
 
   // 时间轴
   c.textAlign = 'center'; c.textBaseline = 'top';
-  c.fillStyle = 'rgba(138,176,220,.75)';
+  c.fillStyle = chartTheme().label;
   const n = pitchData.length;
   if (n > 1) {
     for (let i = 0; i <= 4; i++) {
@@ -2161,6 +2228,35 @@ function otaLog(msg) {
 // GPS 地图（Leaflet）
 // ============================================================
 let gpsMap, gpsMarker, gpsTrack, gpsPoints = [];
+let gpsPlaceholder = null;
+
+/* 没有定位时地图上显示的占位点：南京航空航天大学（明故宫校区，御道街 29 号）。
+   RTK 模块还没接好之前，地图空着一片什么也说明不了，摆个已知位置至少
+   能看出地图组件、瓦片、缩放都是好的。
+
+   **它必须一眼就能看出是假的。** 一个没有标注的坐标点，看的人默认会
+   当成车的实际位置——续航估算那里踩过同样的坑：估算值不标明是估算，
+   就会被当实测值用。所以这里用虚线空心圈（和真实定位的实心标记完全不同），
+   文字里写明"演示位置"，并且真实定位一到就立刻把它撤掉。 */
+const GPS_PLACEHOLDER = [32.0357, 118.8036];
+const GPS_PLACEHOLDER_NAME = '南京航空航天大学（明故宫校区）';
+
+function showGpsPlaceholder() {
+  if (!gpsMap || !window.L) return;
+  if (!gpsPlaceholder) {
+    gpsPlaceholder = L.circleMarker(GPS_PLACEHOLDER, {
+      radius: 9, color: '#8e8e93', weight: 2, dashArray: '4 3',
+      fill: true, fillColor: '#8e8e93', fillOpacity: 0.12
+    }).addTo(gpsMap).bindTooltip('演示位置 · 无定位', { permanent: true, direction: 'top' });
+  }
+  const empty = document.getElementById('mapEmpty');
+  if (empty) empty.classList.add('hide');
+  gpsMap.invalidateSize();
+}
+
+function hideGpsPlaceholder() {
+  if (gpsPlaceholder && gpsMap) { gpsMap.removeLayer(gpsPlaceholder); gpsPlaceholder = null; }
+}
 /* Leaflet 是从 CDN 加载的，而这套系统的实际部署环境很可能【上不了外网】
    （工控现场的内网、只有内网的 VM、板子挂在一个没有出口的 AP 上）。
    那种情况下 window.L 根本不存在，地图和瓦片都出不来——这是必须预期的
@@ -2182,11 +2278,13 @@ function initMap() {
     console.warn('[map] Leaflet 未加载，地图功能降级为纯坐标显示');
     return;
   }
-  gpsMap = L.map('map').setView([32.06, 118.80], 13);
+  gpsMap = L.map('map').setView(GPS_PLACEHOLDER, 15);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '© OpenStreetMap'
   }).addTo(gpsMap);
-  gpsMarker = L.marker([32.06, 118.80]).addTo(gpsMap);
+  gpsMarker = L.marker(GPS_PLACEHOLDER).addTo(gpsMap);
+  /* 真实定位到来之前先把实心标记藏起来，免得它被当成车的位置 */
+  gpsMap.removeLayer(gpsMarker);
   gpsTrack = L.polyline([], { color: '#3ddc97', weight: 2 }).addTo(gpsMap);
 }
 function updateGps(data) {
@@ -2195,11 +2293,26 @@ function updateGps(data) {
   if (!data.fix || data.fix === 0) {
     /* fix=0 说明模块接上了但还没搜到星，跟"压根没接模块"是两回事，
        空状态里说清楚，免得让人去查接线 */
-    info.textContent = '未定位（模块在线，正在搜星 fix=0）';
+    info.textContent = '未定位（模块在线，正在搜星 fix=0）· 地图上是 '
+      + GPS_PLACEHOLDER_NAME + '，演示位置，不是车的实际位置';
+    showGpsPlaceholder();
     return;
   }
   const lat = num(data.lat), lon = num(data.lon);
-  if (!lat && !lon) return;    // 0,0 是几内亚湾，几乎一定是无效值而不是真坐标
+  if (!lat && !lon) {
+    /* 0,0 是几内亚湾，几乎一定是无效值而不是真坐标。
+       注意这里**也要走占位分支**：网关在丢解时会把坐标清零并保持 fix>0
+       的上一个值发出来，光判 fix 会漏掉这种情况，结果是地图停在
+       上一个真实点上不动——那比显示占位点更容易骗人。 */
+    info.textContent = '坐标无效（0,0）· 地图上是 ' + GPS_PLACEHOLDER_NAME
+      + '，演示位置，不是车的实际位置';
+    showGpsPlaceholder();
+    return;
+  }
+
+  /* 真实定位来了：撤掉占位点，把实心标记放回去 */
+  hideGpsPlaceholder();
+  if (gpsMap && gpsMarker && !gpsMap.hasLayer(gpsMarker)) gpsMarker.addTo(gpsMap);
   info.textContent = '纬度 ' + lat.toFixed(6) + '  经度 ' + lon.toFixed(6) +
     '  卫星 ' + (data.sat || '-') + '  速度 ' + num(data.speed) + ' km/h';
 

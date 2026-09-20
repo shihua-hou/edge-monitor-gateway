@@ -58,6 +58,7 @@
 #define CAN_ID_STATUS_REPORT  0x100
 #define CAN_ID_IMU_FRAME      0x101
 #define CAN_ID_MOTOR_STATE    0x102
+#define CAN_ID_MOTOR_DISP     0x103
 #define CAN_ID_CTRL_CMD       0x110
 
 #define MQTT_HOST_DEFAULT  "localhost"
@@ -71,6 +72,14 @@
 static char g_tp_status[128];
 static char g_tp_imu[128];
 static char g_tp_motor[128];
+
+/* 0x103 的有符号位移。缓存下来随 0x102 一起发：两帧是背靠背发出的，
+   拆成两条 MQTT 消息的话，上位机得自己对齐时序才能用——
+   而"对齐两条异步消息"正是最容易写出竞态的地方。合并成一条就没这问题。
+   初值 0 且 g_have_disp=0：**没收到过 0x103 时字段整个不出现**，
+   而不是填 0 冒充——老固件没有这一帧，填 0 会让上位机以为车一直没动。 */
+static int g_disp_l = 0, g_disp_r = 0;
+static int g_have_disp = 0;
 static char g_tp_cmd[128];
 
 /* 设备在线状态 topic 前缀。broker 现在部署在服务器侧（不再跟网关同机），
@@ -84,6 +93,7 @@ static struct mosquitto *g_mosq = NULL;
 /* 设备号。原本只是 main 里的一个局部变量，但重发上线通告时也要用到它，
    而那个函数在主循环里被调用——提成全局比一路往下传参干净 */
 static char g_dev_id[64] = "";
+static char g_tp_cmdecho[128];   /* 命令回显，见 publish_frame 的 0x110 分支 */
 static char g_online_topic[128];
 static char g_online_payload[192];   /* 上线通告，内容见 build_online_payload */
 static char g_will_payload[96];      /* 掉线遗嘱，broker 代发 */
@@ -244,7 +254,12 @@ static void on_message(struct mosquitto *mosq, void *userdata,
 
     /* 基本范围校验：这是控制下行链路唯一的入口，之前是不管三七二十一直接
        透传上 CAN 总线的，任何客户端只要连上 broker 就能塞任意字节过去 */
-    if (d < 1 || d > 4 || a < 1 || a > 6 || p1 < 0 || p1 > 255 || p2 < 0 || p2 > 255) {
+    /* 动作码上限跟着协议走：1~6 是最初的 LED/蜂鸣器/运动，
+       后来又加了 7=急停 8=解除急停 9=坦克式差速。
+       这一行当时没跟着改，结果是新动作全被静静丢掉——
+       而且只在网关日志里打一行 rejected，上层无从得知。
+       **白名单式校验必须和协议同步扩展，否则它会从安全措施变成隐形障碍。** */
+    if (d < 1 || d > 4 || a < 1 || a > 9 || p1 < 0 || p1 > 255 || p2 < 0 || p2 > 255) {
         printf("[cmd] rejected: dev=%d act=%d p1=%d p2=%d out of range\n", d, a, p1, p2);
         return;
     }
@@ -356,9 +371,56 @@ static void publish_frame(const struct can_frame *f)
         int rr = (int)(short)((f->data[2] << 8) | f->data[3]);
         int odo_l = (f->data[4] << 8) | f->data[5];
         int odo_r = (f->data[6] << 8) | f->data[7];
-        snprintf(payload, sizeof(payload), "{\"rl\":%d,\"rr\":%d,\"ol\":%d,\"or\":%d}",
-                 rl, rr, odo_l, odo_r);
+        if (g_have_disp)
+            snprintf(payload, sizeof(payload),
+                     "{\"rl\":%d,\"rr\":%d,\"ol\":%d,\"or\":%d,\"dl\":%d,\"dr\":%d}",
+                     rl, rr, odo_l, odo_r, g_disp_l, g_disp_r);
+        else
+            snprintf(payload, sizeof(payload), "{\"rl\":%d,\"rr\":%d,\"ol\":%d,\"or\":%d}",
+                     rl, rr, odo_l, odo_r);
         mosquitto_publish(g_mosq, NULL, g_tp_motor, strlen(payload), payload, 0, false);
+        break;
+    }
+    case CAN_ID_MOTOR_DISP: {
+        /* 左右轮有符号位移，各 int32 大端，单位 mm。
+           必须按 int32_t 解释：倒车时是负数，当无符号读会变成 40 多亿，
+           轨迹瞬间被甩出画布——和转速那处是同一类错误。 */
+        g_disp_l = (int)(int32_t)(((uint32_t)f->data[0] << 24) | ((uint32_t)f->data[1] << 16) |
+                                  ((uint32_t)f->data[2] << 8)  |  (uint32_t)f->data[3]);
+        g_disp_r = (int)(int32_t)(((uint32_t)f->data[4] << 24) | ((uint32_t)f->data[5] << 16) |
+                                  ((uint32_t)f->data[6] << 8)  |  (uint32_t)f->data[7]);
+        g_have_disp = 1;
+        break;   /* 不单独发消息，等下一帧 0x102 一起带出去 */
+    }
+    case CAN_ID_CTRL_CMD: {
+        /* 命令回显。
+         *
+         * 这一帧是**我们自己发出去**的，不是 STM32 上报的——SocketCAN 默认开
+         * 本机回环，同一接口上其它 socket 能收到本机发的帧，所以在这里一并抓到。
+         *
+         * 为什么要回显：车有两个控制入口——\"t UI 走 M\"TT 到本网关，
+         * 手机控制页(mobile_ctrl)在板子上**直接写 CAN**。后者 \"t 完全看不见。
+         * 而"路线录制"要录的恰恰是人怎么开的，漏掉手机那路就等于什么都没录到。
+         * CAN 总线是两路唯一的汇合点，在这里回显能**录全**，
+         * 而且录到的是原始指令本身：毫秒级时刻、精确数值。
+         *
+         * 之前录 0x102 的实测转速为什么不行：那个帧固定 200ms 一发，
+         * 而人点一下转向也就 300~500ms——三次采样都不到，转向时长被量化到
+         * 200ms 的格子上，误差直接 20~30%；再加上采到的都是 PI 还在爬坡
+         * 途中的转速（比指令低），回放时转角系统性偏小。
+         * 录指令没有这个问题：指令是阶跃的，没有"中间值"可采错。
+         *
+         * ts 用**单调时钟**而不是墙上时间：录制中途 NTP 校时跳一下，
+         * 用 CLOCK_REALTIME 算出来的段长可能变成负数或几十秒。
+         */
+        struct timespec ts;
+        long long ms;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        ms = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        snprintf(payload, sizeof(payload),
+                 "{\"ts\":%lld,\"dev\":%d,\"act\":%d,\"p1\":%d,\"p2\":%d}",
+                 ms, f->data[0], f->data[1], f->data[2], f->data[3]);
+        mosquitto_publish(g_mosq, NULL, g_tp_cmdecho, strlen(payload), payload, 0, false);
         break;
     }
     default:
@@ -535,6 +597,7 @@ int main(int argc, char *argv[])
     snprintf(g_tp_imu,    sizeof(g_tp_imu),    "%s%s/data/imu",    TP_PREFIX, dev_id);
     snprintf(g_tp_motor,  sizeof(g_tp_motor),  "%s%s/data/motor",  TP_PREFIX, dev_id);
     snprintf(g_tp_cmd,    sizeof(g_tp_cmd),    "%s%s/cmd",         TP_PREFIX, dev_id);
+    snprintf(g_tp_cmdecho, sizeof(g_tp_cmdecho), "%s%s/data/cmdecho", TP_PREFIX, dev_id);
     snprintf(g_online_topic, sizeof(g_online_topic), "%s%s", TP_ONLINE_PREFIX, dev_id);
     printf("topics: %s | %s\n", g_tp_status, g_tp_cmd);
 

@@ -29,14 +29,52 @@
   --accent:#35d6ff; --accent-dim:#1d7fa8; --accent2:#4d9fff; --accent3:#a98bff;
   --warn:#ffab3d; --warn-bg:#3a2a10; --danger:#ff4d6d; --danger-bg:#3a1420;
   --ok-bg:#0c3348; --shadow:0 8px 24px rgba(0,10,30,.5);
+  /* 面板/输入框的表面色。**抽成变量**是因为原来十几处直接写死了
+     rgba(38,96,170,.16)→rgba(10,28,58,.3) 这种深蓝半透明——
+     那是给深色底设计的，铺到浅色背景上就是一层脏灰，
+     日间模式看着像被禁用。有了变量，换主题只换这两行。 */
+  --panel-bg:linear-gradient(180deg, rgba(38,96,170,.16), rgba(10,28,58,.3));
+  --panel-bg-hover:linear-gradient(180deg, rgba(45,115,200,.24), rgba(10,28,58,.34));
+  --input-bg:rgba(5,14,30,.6);
 }
 [data-theme="light"] {
-  --bg:#eef1f6; --bg-elevated:#ffffff; --sidebar:#ffffff;
-  --card:#ffffff; --card-hover:#f6f8fb; --border:#dde3ec;
-  --text:#151b26; --text-dim:#5c6b7f; --text-faint:#93a0b3;
-  --accent:#0ea472; --accent-dim:#0b7d57; --accent2:#2f7de0; --accent3:#8b5cf6;
-  --warn:#b3720a; --warn-bg:#fdf1da; --danger:#d92a4f; --danger-bg:#fce4e9;
-  --ok-bg:#e2f7ee; --shadow:0 8px 24px rgba(30,40,60,.12);
+  /* ── 日间配色 ──
+   *
+   * 原来这套的三个毛病，改的就是这三点：
+   *
+   * 1. **主色在两个主题之间换了身份**：暗色是青（#35d6ff），日间是绿（#0ea472）。
+   *    同一个产品切个主题就换一种品牌色，看着像两个系统。
+   *    现在日间用同一个蓝青家族里够暗、能在白底上读的那一档。
+   *
+   * 2. **层次塌了**：卡片 #fff 压在 #eef1f6 上，差一档灰都不到，
+   *    再配上极浅的边框，整屏看着像被禁用了。
+   *    现在背景压深一点、边框加重、阴影给实，白卡片才浮得起来。
+   *
+   * 3. **次要文字对比度不合格**：--text-faint 原来是 #93a0b3，
+   *    在白底上对比度只有 2.6:1，远低于 WCAG 对正文的 4.5:1。
+   *    截图里那些"状态灯 LED 蜂鸣器 电机"就是这么糊掉的。
+   *    全站有 42 处在用它，所以这一个值的影响面比看起来大得多。
+   *
+   * 括号里是该色在白底上的对比度。
+   */
+  --bg:#eaeef4; --bg-elevated:#ffffff; --sidebar:#ffffff;
+  --card:#ffffff; --card-hover:#f1f5fa; --border:#d3dbe6;
+  --text:#111827;       /* 16.1:1 */
+  --text-dim:#4b5563;   /* 7.6:1  */
+  --text-faint:#6b7280; /* 4.8:1  —— 原来是 2.6:1 */
+  --accent:#0b6bcb;     /* 5.1:1  和暗色的青同族，只是压暗到能读 */
+  --accent-dim:#084f97; --accent2:#2563eb; --accent3:#7c3aed;
+  --warn:#9a5b06;       /* 5.0:1 */
+  --warn-bg:#fdf1d6; --danger:#c81e3a; /* 5.8:1 */ --danger-bg:#fde7ea;
+  --ok-bg:#dcf5e8;
+  /* 两层阴影：近处一层勾边界，远处一层给浮起来的感觉。
+     只用一层大而淡的阴影，在浅背景上几乎看不出卡片边界。 */
+  --shadow:0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.08);
+  /* 浅色下面板就该是**干净的白**。留一丝极淡的竖向渐变，
+     让大块白面不至于完全死板，但不能再有任何灰调子。 */
+  --panel-bg:linear-gradient(180deg, #ffffff, #fbfcfe);
+  --panel-bg-hover:linear-gradient(180deg, #f7faff, #f2f6fc);
+  --input-bg:#ffffff;
 }
 * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI','Microsoft YaHei',sans-serif; }
 html, body { height:100%; }
@@ -96,7 +134,7 @@ body { background:var(--bg); color:var(--text); overflow:hidden; }
   margin-bottom:6px; }
 .lf-hint { font-size:10.5px; color:var(--text-faint); margin:-6px 0 12px; }
 .login-form input { width:100%; padding:10px 12px; margin-bottom:14px; box-sizing:border-box;
-  background:rgba(5,14,30,.6); border:1px solid var(--border); border-radius:3px;
+  background:var(--input-bg); border:1px solid var(--border); border-radius:3px;
   color:var(--text); font-size:14px; font-family:inherit; transition:border-color .15s, box-shadow .15s; }
 .login-form input:focus { outline:none; border-color:var(--accent);
   box-shadow:0 0 0 2px rgba(53,214,255,.14); }
@@ -178,11 +216,11 @@ body { background:var(--bg); color:var(--text); overflow:hidden; }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; margin-bottom:20px; }
 /* 卡片/分区沿用大屏的语言：切角、半透明玻璃底、竖条标题标记。
    区别只在密度——控制台是操作页，留白比大屏大 */
-.card { background:linear-gradient(180deg, rgba(38,96,170,.16), rgba(10,28,58,.3));
+.card { background:var(--panel-bg);
         border:1px solid var(--border); border-radius:3px; padding:16px;
         clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
         transition:background .15s; }
-.card:hover { background:linear-gradient(180deg, rgba(45,115,200,.24), rgba(10,28,58,.34)); }
+.card:hover { background:var(--panel-bg-hover); }
 .card .label { font-size:12px; color:var(--text-dim); margin-bottom:8px; display:flex; align-items:center; gap:6px;
         letter-spacing:1px; }
 .card .value { font-size:27px; font-weight:600; color:var(--accent); font-variant-numeric:tabular-nums;
@@ -191,7 +229,7 @@ body { background:var(--bg); color:var(--text); overflow:hidden; }
 .card .unit { font-size:13px; color:var(--text-faint); margin-left:3px; font-weight:400; }
 .card .trend { font-size:11px; color:var(--text-faint); margin-top:4px; }
 
-.section { background:linear-gradient(180deg, rgba(38,96,170,.14), rgba(10,28,58,.28));
+.section { background:var(--panel-bg);
         border:1px solid var(--border); border-radius:3px; padding:0 18px 18px; margin-bottom:18px;
         box-shadow:inset 0 1px 0 rgba(160,215,255,.16); }
 .section-head { display:flex; align-items:center; gap:10px; position:relative;
@@ -244,7 +282,7 @@ input[type=range] { width:220px; vertical-align:middle; accent-color:var(--accen
    在这套深色界面里就是一个刺眼的白底框，跟旁边的输入框完全不是一套东西。
    之前设置页的 APISecret 和登录页的密码框都是这个毛病。 */
 input[type=text], input[type=number], input[type=password], select {
-  background:rgba(5,14,30,.6); border:1px solid var(--border); border-radius:3px; color:var(--text);
+  background:var(--input-bg); border:1px solid var(--border); border-radius:3px; color:var(--text);
   padding:9px 11px; font-size:13px; font-family:inherit;
 }
 input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, select:focus {
@@ -352,8 +390,15 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
 .dv-panel { position:relative; background:linear-gradient(180deg, rgba(20,27,40,.92), rgba(13,18,28,.92));
   border:1px solid rgba(61,220,151,.18); border-radius:6px; padding:16px 18px 18px;
   box-shadow:inset 0 0 40px rgba(0,0,0,.35); }
-[data-theme="light"] .dv-panel { background:linear-gradient(180deg, #fff, #f7fafc);
-  border-color:rgba(14,164,114,.25); box-shadow:inset 0 0 24px rgba(30,40,60,.05); }
+/* 大屏**不跟随主题**，永远深色。
+   这不是偷懒：大屏的视觉语言是霓虹发光、四角切线、扫描线，
+   这些只在深底上成立——同一套装饰放到白底上会变成一堆脏印子。
+   而且它是给墙上看的，深色本来就是这类看板的惯例。
+   主题开关的说明文字写的也是"切换**控制台**的整体配色"。
+
+   原来这里有一条 [data-theme="light"] .dv-panel 的覆盖，把面板刷成白色，
+   但大屏的页面背景是写死的深蓝——结果日间模式下变成白面板浮在深底上，
+   比纯深色更难看。删掉它，让这一页彻底不受主题影响。 */
 .dv-panel .corner { position:absolute; width:13px; height:13px; border:2px solid var(--accent); opacity:.8; }
 .dv-panel .corner.tl { top:-1px; left:-1px; border-right:none; border-bottom:none; }
 .dv-panel .corner.tr { top:-1px; right:-1px; border-left:none; border-bottom:none; }
@@ -539,6 +584,8 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
      区分层次。之前用接近实心的深蓝块，一块块糊在一起，很沉 */
   #page-dashboard.active .dv-panel { min-height:0; display:flex; flex-direction:column;
     padding:10px 14px 12px; border-radius:2px;
+    /* 大屏的面板**不用 --panel-bg**：那个变量会跟着主题变白，
+       而大屏永远是深色的（霓虹描边和扫描线只在深底上成立）。 */
     background:linear-gradient(180deg, rgba(38,96,170,.20), rgba(10,28,58,.34));
     border:1px solid rgba(110,185,255,.30);
     box-shadow:inset 0 1px 0 rgba(160,215,255,.22), 0 0 22px rgba(10,40,90,.35); }
@@ -586,6 +633,7 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
   /* ---- KPI：中列顶部的一排关键指标 ---- */
   .dv-kpi-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
   .dv-kpi-cell { text-align:center; padding:8px 4px; position:relative;
+    /* 同上：大屏元素不跟随主题 */
     background:linear-gradient(180deg, rgba(30,90,160,.35), rgba(10,30,60,.2));
     border:1px solid rgba(90,169,255,.22);
     clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px); }
@@ -781,7 +829,7 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
 /* ---------- 告警中心：概览 KPI + 阈值配置 ---------- */
 .alert-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
   gap:14px; margin-bottom:18px; }
-.akpi { background:linear-gradient(180deg, rgba(38,96,170,.16), rgba(10,28,58,.3));
+.akpi { background:var(--panel-bg);
   border:1px solid var(--border); padding:16px 18px;
   clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
   border-left:3px solid var(--accent); }

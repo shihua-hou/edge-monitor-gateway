@@ -14,11 +14,12 @@ class NavIconButton : public QAbstractButton
 {
     Q_OBJECT
 public:
-    enum IconType { Home, Control, Voice, Settings };
+    enum IconType { Home, Vehicle, Map, Route, Control, Voice, Settings };
 
     explicit NavIconButton(IconType type, const QString &label, QWidget *parent = nullptr);
 
     QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
 
 protected:
     void paintEvent(QPaintEvent *event) override;
