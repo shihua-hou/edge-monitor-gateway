@@ -1,31 +1,31 @@
 [Unit]
-Description=EdgeMonitor Web Dashboard (static files)
-# 只依赖网络接口起来即可。这个服务不连任何外部东西，
-# 就是把 web/ 目录里的两个静态文件发出去
+Description=EdgeMonitor Web Dashboard (static files + video relay)
 After=network.target
 
 [Service]
 Type=simple
 User=user
 Group=user
-# 直接把工作目录设成 web/，而不是用 --directory 参数。
-# 这台 VM 是 Python 3.6.9，而 `http.server --directory` 是 3.7 才加的——
-# 用了会直接 "unrecognized arguments" 退出码 2，然后被 Restart=always
-# 拉起来再退，无限循环。
-# （同一个坑项目里踩过：history_logger.py 里专门为 3.6 写了
-#   ThreadingHTTPServer 的降级分支，那也是 3.7 才有的东西。
-#   写这个 unit 时没想起来目标机器的 Python 版本。）
-# http.server 本来就是从当前目录提供文件，WorkingDirectory 完全等价，
-# 而且对版本没有要求。
-WorkingDirectory=/home/user/edgemonitor/web
 
-# 用 Python 自带的 http.server 而不是 nginx：这个大屏只有两个静态文件
-# （index.html + app.js），所有数据都走 MQTT over WebSocket 和历史服务的
-# HTTP 接口，服务器这边不需要任何动态能力。多引入一个 nginx 意味着多一份
-# 配置、多一个要维护的东西，收益是零。
+# ── 为什么不再用 python3 -m http.server ──
 #
-# --bind 0.0.0.0 是必须的：默认只监听回环，板子和其它机器就访问不到了。
-ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+# 以前这里写着"服务器这边不需要任何动态能力"——那时视频由浏览器直接去连板子。
+# 实测那条路很脆：浏览器会限制网页去访问局域网里的另一台设备
+# （页面从 fly260305.local 打开时，去 192.168.100.3 的请求被直接拦掉），
+# 通过 Tailscale 在外面访问时更是根本到不了板子的局域网 IP。
+# 改成服务器同源中转 /video 之后，浏览器只跟这一个地址打交道。
+# 细节和安全限制（只转发到局域网私有 IP 的 8081）见 server/web_server.py。
+#
+# ── 两个版本相关的坑 ──
+# 这台 VM 是 Python 3.6.9：
+#   - http.server 的 --directory、ThreadingHTTPServer 都是 3.7 才有，
+#     web_server.py 里用 os.chdir + ThreadingMixIn 绕开了
+#   - 3.6 在 stderr 重定向时是**块缓冲**，日志攒在缓冲区里不落盘，
+#     journalctl 里长时间一个字都没有，看着像服务卡死。所以必须加 -u
+Environment=EM_WEB_PORT=8080
+Environment=EM_WEB_DIR=/home/user/edgemonitor/web
+WorkingDirectory=/home/user/edgemonitor
+ExecStart=/usr/bin/python3 -u /home/user/edgemonitor/server/web_server.py
 
 Restart=always
 RestartSec=5

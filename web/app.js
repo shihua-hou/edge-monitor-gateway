@@ -690,7 +690,7 @@ function applyVideoSource() {
       stream.hidden = true;
       if (empty) empty.classList.remove('hide');
       setVideoEmptyText('视频连接中断',
-        Math.round(videoRetryDelay / 1000) + ' 秒后自动重连（' + d2.ip + ':' + (d2.video || 8081) + '）');
+        Math.round(videoRetryDelay / 1000) + ' 秒后自动重连（经服务器中转 → ' + d2.ip + ':8081）');
       videoRetryTimer = setTimeout(function () {
         videoRetryDelay = Math.min(videoRetryDelay * 2, 15000);
         applyVideoSource();
@@ -701,8 +701,14 @@ function applyVideoSource() {
       videoRetryDelay = 3000;
       setVideoEmptyText();
     };
-    stream.src = 'http://' + d.ip + ':' + (d.video || 8081) +
-                 '/?action=stream&token=' + encodeURIComponent(videoToken) +
+    /* 走服务器的 /video 中转，**不直接连板子**。
+       直连要求看大屏的设备能访问到板子的局域网 IP：浏览器会限制网页去访问
+       局域网里的另一台设备（实测从 fly260305.local 打开页面时被直接拦掉），
+       通过 Tailscale 在外面访问时更是根本到不了 192.168.100.x。
+       同源之后浏览器只跟一个地址打交道，这些问题一起消失。
+       见 server/web_server.py。 */
+    stream.src = '/video?host=' + encodeURIComponent(d.ip) +
+                 '&token=' + encodeURIComponent(videoToken) +
                  '&_=' + Date.now();
   } else {
     setVideoEmptyText();
@@ -2340,7 +2346,10 @@ function showGpsPlaceholder() {
     gpsPlaceholder = L.circleMarker(GPS_PLACEHOLDER, {
       radius: 9, color: '#8e8e93', weight: 2, dashArray: '4 3',
       fill: true, fillColor: '#8e8e93', fillOpacity: 0.12
-    }).addTo(gpsMap).bindTooltip('演示位置 · 无定位', { permanent: true, direction: 'top' });
+    }).addTo(gpsMap);
+    /* 不再在点上挂常驻标签：它压在地图正中，挡住了底下的地名。
+       "这是演示位置、不是车的实际位置"已经写在地图下方那行说明里了，
+       虚线空心圈本身也和真实定位的实心标记区分得开。 */
   }
   const empty = document.getElementById('mapEmpty');
   if (empty) empty.classList.add('hide');

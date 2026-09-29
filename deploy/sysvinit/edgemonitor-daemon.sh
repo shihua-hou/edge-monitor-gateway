@@ -482,7 +482,10 @@ while true; do
     # WebSocket，而板子这个交叉编译版没链 libwebsockets）。
     start_if_dead mosquitto      "$BIN_DIR/mosquitto"      -c "$BIN_DIR/mosquitto.conf"
     start_if_dead gateway_mqtt   "$BIN_DIR/gateway_mqtt"   can0
-    start_if_dead video_v4l2     "$BIN_DIR/video_v4l2"     /dev/video2 8081
+    # 摄像头设备写 auto，由程序按驱动名 uvcvideo 自己找——
+    # 写死 /dev/video2 的话，摄像头在 USB 上掉线重连一次编号就变成 video3，
+    # 服务永远打不开它（实测过）。
+    start_if_dead video_v4l2     "$BIN_DIR/video_v4l2"     auto 8081
     start_if_dead edgemonitor_ui "$BIN_DIR/edgemonitor_ui" -platform linuxfb
     # 远程屏幕：抓 framebuffer + 注入触摸 + 接收固件上传（端口 8082）
     start_if_dead screen_share   "$BIN_DIR/screen_share"   8082 "" /dev/input/event1 "$BIN_DIR/"

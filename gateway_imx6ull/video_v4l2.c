@@ -147,6 +147,61 @@ static int v4l2_init(const char *dev, int w, int h)
     return 0;
 }
 
+
+/* ============ 自动找 USB 摄像头 ============
+ *
+ * 为什么不写死 /dev/video2：
+ * 实测过——USB 摄像头在总线上掉线一下（供电抖动时会这样），一秒后又
+ * 重新枚举回来，但**编号变成了 video3**，video2 已经不存在。
+ * 写死编号的话，摄像头明明好了，服务却永远打开不到它。
+ * （RTK 模块的串口 ttyACM3 是同一类问题，见 gps_mqtt.c 的 find_nmea_port。）
+ *
+ * 这块板子上的 video 节点不止一个：video0 是 PxP（图像处理单元）、
+ * video1 是板载 CSI 并口摄像头接口，都不是我们要的。
+ * 按**驱动名 uvcvideo** 找，比按编号或按设备名都可靠——
+ * 换一个别的牌子的 USB 摄像头，名字会变，驱动不会。
+ */
+static int find_uvc_camera(char *out, size_t outsz)
+{
+    int i;
+    for (i = 0; i < 16; i++) {
+        char link[128], target[256];
+        ssize_t n;
+        const char *base;
+        snprintf(link, sizeof(link), "/sys/class/video4linux/video%d/device/driver", i);
+        n = readlink(link, target, sizeof(target) - 1);
+        if (n <= 0) continue;
+        target[n] = 0;
+        base = strrchr(target, '/');
+        base = base ? base + 1 : target;
+        if (strcmp(base, "uvcvideo") != 0) continue;
+
+        /* 新内核的 UVC 设备会多出一个"元数据"节点，它也挂在 uvcvideo 下，
+           但不能采图。用 QUERYCAP 过滤一下，只要真能 CAPTURE 的那个。 */
+        {
+            char dev[32];
+            struct v4l2_capability cap;
+            int fd;
+            snprintf(dev, sizeof(dev), "/dev/video%d", i);
+            fd = open(dev, O_RDWR | O_NONBLOCK);
+            if (fd < 0) continue;
+            memset(&cap, 0, sizeof(cap));
+            if (ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0) {
+                unsigned caps = (cap.capabilities & V4L2_CAP_DEVICE_CAPS)
+                              ? cap.device_caps : cap.capabilities;
+                close(fd);
+                if (caps & V4L2_CAP_VIDEO_CAPTURE) {
+                    snprintf(out, outsz, "%s", dev);
+                    return 0;
+                }
+                continue;
+            }
+            close(fd);
+        }
+    }
+    return -1;
+}
+
 /* ============ 采集线程：取帧 → 存全局最新帧 ============ */
 static void *capture_thread(void *arg)
 {
@@ -176,7 +231,17 @@ static void *capture_thread(void *arg)
         if (xioctl(dev_fd, VIDIOC_DQBUF, &buf) < 0) {
             if (errno == EAGAIN) continue;
             perror("DQBUF");
-            break;
+            /* **采集失败就让整个进程退出**，别只结束这个线程。
+               原来是 break 出循环、线程结束——但 HTTP 那边还活着：
+               端口在监听、浏览器连得上、连接也建立了，就是永远不给画面。
+               从外面看"服务在跑"，其实早就死了一半，这是最难发现的状态。
+               进程退出后守护脚本 10 秒内拉起，启动时重新找摄像头，
+               摄像头换了编号也能接上。
+               不在进程内重新初始化：要拆 mmap、要处理已连着的观众，
+               复杂度远高于"重启一次"，而重启只要几秒。 */
+            fprintf(stderr, "[capture] 摄像头采集失败（%s），退出等待守护脚本重启\n",
+                    strerror(errno));
+            exit(2);
         }
 
         /* 拷贝到全局缓冲（加锁） */
@@ -189,7 +254,11 @@ static void *capture_thread(void *arg)
         pthread_mutex_unlock(&g_lock);
 
         /* 归还缓冲 */
-        if (xioctl(dev_fd, VIDIOC_QBUF, &buf) < 0) { perror("QBUF"); break; }
+        if (xioctl(dev_fd, VIDIOC_QBUF, &buf) < 0) {
+            perror("QBUF");
+            fprintf(stderr, "[capture] 归还缓冲失败，退出等待重启\n");
+            exit(2);
+        }
     }
 
     xioctl(dev_fd, VIDIOC_STREAMOFF, &type);
@@ -199,7 +268,11 @@ static void *capture_thread(void *arg)
 /* ============ 主线程：HTTP 多客户端 MJPEG 推流 ============ */
 int main(int argc, char *argv[])
 {
-    const char *dev  = (argc > 1) ? argv[1] : "/dev/video0";
+    /* 设备参数：不给或给 "auto" 就按驱动名自动找 USB 摄像头（推荐）；
+       也可以直接给 /dev/videoN，调试时用。 */
+    const char *devarg = (argc > 1) ? argv[1] : "auto";
+    char devbuf[32];
+    const char *dev = devarg;
     int         port = (argc > 2) ? atoi(argv[2]) : 8081;
     const char *token = (argc > 3) ? argv[3] : "";   /* v2: 访问令牌 */
 
@@ -222,6 +295,18 @@ int main(int argc, char *argv[])
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     if (!sendbuf) { fprintf(stderr, "malloc fail\n"); return 1; }
+
+    if (strcmp(devarg, "auto") == 0) {
+        if (find_uvc_camera(devbuf, sizeof(devbuf)) != 0) {
+            /* 找不到也不要立刻退出狂刷：摄像头可能正在重新枚举。
+               退出码非 0，守护脚本下一轮会再拉起来重试。 */
+            fprintf(stderr, "[capture] 没找到 USB 摄像头（uvcvideo），稍后由守护脚本重试\n");
+            sleep(5);
+            return 1;
+        }
+        dev = devbuf;
+    }
+    printf("[capture] 使用摄像头 %s\n", dev);
 
     /* V4L2 初始化 */
     if (v4l2_init(dev, PIX_W, PIX_H) < 0) return 1;
