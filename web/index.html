@@ -218,7 +218,7 @@ body { background:var(--bg); color:var(--text); overflow:hidden; }
    区别只在密度——控制台是操作页，留白比大屏大 */
 .card { background:var(--panel-bg);
         border:1px solid var(--border); border-radius:3px; padding:16px;
-        clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
+        border-radius:12px;
         transition:background .15s; }
 .card:hover { background:var(--panel-bg-hover); }
 .card .label { font-size:12px; color:var(--text-dim); margin-bottom:8px; display:flex; align-items:center; gap:6px;
@@ -267,13 +267,22 @@ body { background:var(--bg); color:var(--text); overflow:hidden; }
 }
 
 .btns { display:flex; flex-wrap:wrap; gap:10px; }
-button { background:var(--card-hover); color:var(--text); border:1px solid var(--border); border-radius:3px;
-         padding:10px 18px; font-size:14px; cursor:pointer; transition:filter .15s,background .15s; font-weight:500;
-         clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
-button:hover { filter:brightness(1.15); }
+/* ── 按钮：控制台统一圆角，不再切角 ──
+   原来基础 button 带 clip-path 切角。切角会把 1px 边框**一起切掉**：
+   填充色按钮（保存、上传）看不出来，而带边框的按钮（清空、刷新、改名）
+   在两个斜角处边框断开，看着像没画完。同一页里两种按钮并排，更显得乱。
+   切角这套科幻语言留给大屏和登录页（那里的面板本身就是这个风格），
+   控制台是个运维工具，要的是干净、好点、状态清楚。 */
+button { background:var(--card-hover); color:var(--text); border:1px solid var(--border); border-radius:8px;
+         padding:9px 16px; font-size:14px; cursor:pointer; font-weight:500; line-height:1.2;
+         transition:filter .15s, background .15s, border-color .15s, box-shadow .15s, transform .08s; }
+button:hover { filter:brightness(1.15); border-color:var(--accent-dim); }
+/* 键盘操作时要看得出焦点在哪；鼠标点击不显示（:focus-visible 只在键盘导航时生效） */
+button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 button:active { transform:translateY(1px); }
 button:disabled { opacity:.5; cursor:not-allowed; }
-button.primary { background:var(--accent); color:#04140d; border-color:var(--accent); font-weight:700; }
+button.primary { background:var(--accent); color:#04140d; border-color:var(--accent); font-weight:700;
+                 box-shadow:0 4px 14px -6px var(--accent); }
 button.danger { background:var(--danger-bg); border-color:var(--danger); color:var(--danger); }
 button.ghost { background:transparent; }
 input[type=range] { width:220px; vertical-align:middle; accent-color:var(--accent); }
@@ -282,9 +291,12 @@ input[type=range] { width:220px; vertical-align:middle; accent-color:var(--accen
    在这套深色界面里就是一个刺眼的白底框，跟旁边的输入框完全不是一套东西。
    之前设置页的 APISecret 和登录页的密码框都是这个毛病。 */
 input[type=text], input[type=number], input[type=password], select {
-  background:var(--input-bg); border:1px solid var(--border); border-radius:3px; color:var(--text);
+  background:var(--input-bg); border:1px solid var(--border); border-radius:8px; color:var(--text);
   padding:9px 11px; font-size:13px; font-family:inherit;
 }
+/* 表单栏里的输入框撑满本栏。原来按内容给宽度，设置页的 APPID 只有 170px，
+   放在 430px 的栏里缩在左边，右边一大片空着，看着像没排好版。 */
+.field input, .field select { width:100%; box-sizing:border-box; }
 input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, select:focus {
   outline:none; border-color:var(--accent); box-shadow:0 0 0 2px rgba(53,214,255,.14);
 }
@@ -821,7 +833,7 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
 .dev-row { display:flex; align-items:center; gap:12px; padding:12px 14px; margin-bottom:8px;
   background:linear-gradient(90deg, rgba(77,159,255,.07), transparent);
   border:1px solid var(--border); border-radius:3px;
-  clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px); }
+  border-radius:12px; }
 .dev-row.current { border-color:var(--accent);
   background:linear-gradient(90deg, rgba(53,214,255,.14), transparent); }
 .dev-row .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
@@ -845,7 +857,7 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
   gap:14px; margin-bottom:18px; }
 .akpi { background:var(--panel-bg);
   border:1px solid var(--border); padding:16px 18px;
-  clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
+  border-radius:12px;
   border-left:3px solid var(--accent); }
 .akpi.danger { border-left-color:var(--danger); }
 .akpi.warn { border-left-color:var(--warn); }
@@ -913,6 +925,63 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
 .dv-empty b { font-size:12px; font-weight:600; color:var(--text-dim); letter-spacing:.5px; }
 .dv-empty span { font-size:10.5px; color:var(--text-faint); max-width:78%; line-height:1.5; }
 .dv-empty.hide { display:none; }
+
+/* ---- 小车控制 ---- */
+.car-ctl { display:flex; align-items:center; gap:28px; flex-wrap:wrap; }
+.dpad { display:grid; grid-template-columns:repeat(3, 78px); grid-template-rows:repeat(3, 62px); gap:8px; }
+.dpad button { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+               padding:0; font-size:18px; border-radius:12px; }
+.dpad button span { font-size:12px; color:var(--text-dim); font-weight:500; }
+.dp-up    { grid-column:2; grid-row:1; }
+.dp-left  { grid-column:1; grid-row:2; }
+.dp-stop  { grid-column:2; grid-row:2; background:var(--bg-elevated); }
+.dp-right { grid-column:3; grid-row:2; }
+.dp-down  { grid-column:2; grid-row:3; }
+.estop-box { display:flex; flex-direction:column; align-items:center; gap:10px; }
+.estop-box p { margin:0; font-size:11px; line-height:1.5; color:var(--text-faint); text-align:center; }
+button.estop { width:96px; height:96px; border-radius:50%; padding:0; font-size:18px; font-weight:800;
+               letter-spacing:2px; color:#fff; border:3px solid #ff8a9c;
+               background:radial-gradient(circle at 35% 30%, #ff6b83, #c8102e 70%);
+               box-shadow:0 0 0 5px rgba(255,77,109,.18), 0 8px 22px -6px rgba(255,40,70,.7); }
+button.estop:hover { filter:brightness(1.1); }
+button.estop:active { transform:scale(.96); }
+
+/* ---- 空状态 ---- */
+/* 进度条只在真有进度时出现。空闲时露着两条空轨道，看着像控件坏了 */
+.progress-wrap:not(:has(.progress-bar[style*="width"])),
+.progress-wrap:has(.progress-bar[style*="width: 0%"]) { display:none; }
+.log:empty { display:none; }
+.ev-sep { margin:0 8px; color:var(--text-faint); }
+
+/* ================= 大屏美化 ================= */
+
+/* ---- 环境监测：圆环 + 文字的横向卡片，2×2 铺满面板 ----
+   原来大屏模式下圆环被压到 64px，四个小圈散在 440×250 的面板里，
+   中间空出一大片；数值挤在圈里，单位小到看不清。
+   改成每个指标一块卡片：圆环放大，右边写名称和状态。
+   状态词（正常/注意/告警/失联）是给远处扫一眼的人看的——
+   圆环的颜色要走近了才分得清，一个词隔着几米也能读。 */
+#page-dashboard.active .dv-gauges { grid-template-columns:1fr 1fr; gap:10px; align-content:center; }
+#page-dashboard.active .dv-gauge { display:flex; align-items:center; gap:14px; text-align:left;
+  padding:10px 12px; border-radius:4px;
+  background:linear-gradient(135deg, rgba(40,110,200,.14), rgba(40,110,200,.04));
+  border:1px solid rgba(90,169,255,.16); }
+#page-dashboard.active .dv-gauge-ring { width:76px; height:76px; margin:0; flex-shrink:0; }
+#page-dashboard.active .dv-gauge-ring::before { inset:7px; }
+#page-dashboard.active .dv-gauge-val { font-size:19px; }
+#page-dashboard.active .dv-gauge-val .u { font-size:11px; margin-left:1px; }
+.dv-gauge-meta { display:flex; flex-direction:column; gap:7px; min-width:0; }
+#page-dashboard.active .dv-gauge-label { margin:0; font-size:13px; letter-spacing:2px; color:var(--c-dim, #8ab0dc); }
+.dv-gauge-state { align-self:flex-start; font-size:12px; line-height:1; padding:4px 9px; border-radius:10px;
+  color:#3ddc97; background:rgba(61,220,151,.12); border:1px solid rgba(61,220,151,.28); }
+.dv-gauge-state.warn   { color:#ffb14d; background:rgba(255,171,61,.12); border-color:rgba(255,171,61,.34); }
+.dv-gauge-state.danger { color:#ff6b83; background:rgba(255,77,109,.14); border-color:rgba(255,77,109,.40); }
+.dv-gauge-state.stale,
+.dv-gauge-state.wait   { color:#7f93b0; background:rgba(127,147,176,.10); border-color:rgba(127,147,176,.25); }
+
+/* ---- KPI：运行时长下面放一行文字，不放柱状图 ---- */
+.kpi-sub { margin-top:6px; height:16px; line-height:16px; font-size:11px; letter-spacing:1px;
+  color:var(--c-faint, #5b7ba6); font-family:var(--f-mono, Consolas, monospace); }
 </style>
 </head>
 <body data-theme="dark">
@@ -1045,19 +1114,19 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
                 <div class="dv-gauges">
                   <div class="dv-gauge">
                     <div class="dv-gauge-ring" id="gTemp" style="--pct:0;"><div class="dv-gauge-val" id="vTemp">--<span class="u">℃</span></div></div>
-                    <div class="dv-gauge-label">温度</div>
+                    <div class="dv-gauge-meta"><div class="dv-gauge-label">温度</div><div class="dv-gauge-state" id="sTemp">等待数据</div></div>
                   </div>
                   <div class="dv-gauge">
                     <div class="dv-gauge-ring" id="gHumi" style="--pct:0;"><div class="dv-gauge-val" id="vHumi">--<span class="u">%</span></div></div>
-                    <div class="dv-gauge-label">湿度</div>
+                    <div class="dv-gauge-meta"><div class="dv-gauge-label">湿度</div><div class="dv-gauge-state" id="sHumi">等待数据</div></div>
                   </div>
                   <div class="dv-gauge">
                     <div class="dv-gauge-ring" id="gLight" style="--pct:0;"><div class="dv-gauge-val" id="vLight">--<span class="u">%</span></div></div>
-                    <div class="dv-gauge-label">光照</div>
+                    <div class="dv-gauge-meta"><div class="dv-gauge-label">光照</div><div class="dv-gauge-state" id="sLight">等待数据</div></div>
                   </div>
                   <div class="dv-gauge">
                     <div class="dv-gauge-ring" id="gDist" style="--pct:0;"><div class="dv-gauge-val" id="vDist">--<span class="u">cm</span></div></div>
-                    <div class="dv-gauge-label">障碍距离</div>
+                    <div class="dv-gauge-meta"><div class="dv-gauge-label">障碍距离</div><div class="dv-gauge-state" id="sDist">等待数据</div></div>
                   </div>
                 </div>
               </div>
@@ -1100,7 +1169,7 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
             <div class="dv-col">
               <div class="dv-kpi-strip">
                 <div class="dv-kpi-cell"><b id="kpiUptime">00:00</b><span>运行时长</span>
-                  <canvas class="spark" id="sparkUptime"></canvas></div>
+                  <div class="kpi-sub" id="kpiUptimeSub">未连接</div></div>
                 <div class="dv-kpi-cell"><b id="kpiFrames">0</b><span>数据帧数</span>
                   <canvas class="spark" id="sparkFrames"></canvas></div>
                 <div class="dv-kpi-cell"><b id="kpiAlerts">0</b><span>累计告警</span>
@@ -1229,12 +1298,27 @@ canvas { width:100%; height:190px; background:var(--bg); border-radius:10px; }
                 <input type="range" id="speed" min="0" max="100" value="60">
                 <span id="speedVal" style="font-size:13px;color:var(--accent);font-weight:700;">60%</span>
               </div>
-              <div class="btns">
-                <button onclick="carCmd(1)">▲ 前进</button>
-                <button onclick="carCmd(3)">▼ 后退</button>
-                <button onclick="carCmd(4)">◀ 左转</button>
-                <button onclick="carCmd(5)">▶ 右转</button>
-                <button class="danger" onclick="carCmd(2)">■ 紧急停止</button>
+              <!-- 十字方向键：前后左右各在各的方位，中间是"停止"。
+                   原来五个按钮排成一行，看不出哪个是方向、哪个是停，
+                   而方位本身就是最直观的说明。 -->
+              <div class="car-ctl">
+                <div class="dpad">
+                  <button class="dp-up"    onclick="carCmd(1)" title="前进">▲<span>前进</span></button>
+                  <button class="dp-left"  onclick="carCmd(4)" title="左转">◀<span>左转</span></button>
+                  <button class="dp-stop"  onclick="carCmd(2)" title="停止">■<span>停止</span></button>
+                  <button class="dp-right" onclick="carCmd(5)" title="右转">▶<span>右转</span></button>
+                  <button class="dp-down"  onclick="carCmd(3)" title="后退">▼<span>后退</span></button>
+                </div>
+                <!-- 急停单独放、做成最醒目的那个按钮。
+                     原来那个标着"紧急停止"的按钮发的其实是 carCmd(2)，也就是普通停车，
+                     不是固件里的急停：ACT_ESTOP 会硬拉低驱动板使能、锁住不自动恢复，
+                     必须手动"解除急停"才能再动。把普通停车叫"紧急停止"，
+                     会让人以为按下去就是硬件级的保护，那是控制界面上最不能有的误会。 -->
+                <div class="estop-box">
+                  <button class="estop" onclick="carCmd(7)">急停</button>
+                  <button class="ghost" onclick="carCmd(8)">解除急停</button>
+                  <p>急停会切断电机驱动并锁定，<br>需手动解除后才能再次行驶</p>
+                </div>
               </div>
             </div>
           </div>

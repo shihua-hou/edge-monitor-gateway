@@ -416,6 +416,7 @@ let sessionStart = null;
 let frameCount = 0;
 let lastFrameAt = 0;      // 最近一帧的时间戳，用来算"上报间隔"这个健康度明细
 let lastFrameCount = 0;   // 上一次采样时的累计帧数，用来算 sparkline 的帧数增量
+let lastAlertCount = 0;   /* 见 pushSpark('Alerts')：柱子画的是增量 */
 
 async function deriveVideoToken(user, pass) {
   const raw = user + ':' + pass;
@@ -947,6 +948,13 @@ function setGauge(ringId, valId, text, unit, pct, level, staleBit) {
     val.innerHTML = text + '<span class="u">' + unit + '</span>'
                   + (stale ? '<span class="stale-tag">已失联</span>' : '');
   }
+  /* 状态词：vTemp -> sTemp，按同样的规则找到对应的文字标签 */
+  const st = document.getElementById('s' + valId.slice(1));
+  if (st) {
+    const k = stale ? 'stale' : (level || 'ok');
+    st.className = 'dv-gauge-state' + (k === 'ok' ? '' : ' ' + k);
+    st.textContent = { ok: '正常', warn: '注意', danger: '告警', stale: '失联' }[k] || '正常';
+  }
   const ring = document.getElementById(ringId);
   if (!ring) return;
   ring.style.setProperty('--pct', Math.max(0, Math.min(100, pct)));
@@ -1073,18 +1081,35 @@ function onStatusData(data) {
   let sec = 0;
   if (sessionStart) {
     sec = Math.floor((Date.now() - sessionStart) / 1000);
-    const mm = String(Math.floor(sec / 60)).padStart(2, '0'), ss = String(sec % 60).padStart(2, '0');
-    document.getElementById('statUptime').textContent = mm + ':' + ss;
-    document.getElementById('kpiUptime').textContent = mm + ':' + ss;
+    /* 超过一小时切到 H:MM:SS。原来一直是 MM:SS，跑两小时会显示成"125:07"，
+       读的人得自己除以 60 */
+    const hh = Math.floor(sec / 3600);
+    const mm = String(Math.floor(sec / 60) % (hh ? 60 : 1e9)).padStart(2, '0');
+    const ss = String(sec % 60).padStart(2, '0');
+    const up = hh ? hh + ':' + mm + ':' + ss : mm + ':' + ss;
+    document.getElementById('statUptime').textContent = up;
+    document.getElementById('kpiUptime').textContent = up;
+    const sub = document.getElementById('kpiUptimeSub');
+    if (sub) {
+      const t0 = new Date(sessionStart);
+      sub.textContent = '自 ' + String(t0.getHours()).padStart(2, '0') + ':' +
+                        String(t0.getMinutes()).padStart(2, '0') + ' 起';
+    }
   }
 
   // sparkline 历史。帧数记的是"这次上报间隔内新增了多少帧"，
   // 累计值画成柱状只会单调递增，看不出波动
-  pushSpark('Uptime', sec);
+  /* 迷你柱状图只画**变化量**。上面这句注释早就说了累计值画成柱状只会单调递增，
+     帧数也照此改成了增量——但运行时长和累计告警两格当时还是按累计值推的：
+     运行时长永远是一道上升的斜坡、归一化后永远满格；累计告警永远是一条平线。
+     长得像图表、却不表达任何变化的东西，只会让人去猜它是什么意思。
+     现在：运行时长不画柱状图（改成文字"自几点起"），告警画"本时段新增几条"——
+     平时是一排空，出事的那一刻会冒尖。 */
   pushSpark('Frames', frameCount - lastFrameCount);
-  pushSpark('Alerts', alerts.length);
+  pushSpark('Alerts', Math.max(0, alerts.length - lastAlertCount));
   pushSpark('Health', score);
   lastFrameCount = frameCount;
+  lastAlertCount = alerts.length;
   if (document.getElementById('page-dashboard').classList.contains('active')) updateSparks();
 }
 function setText(id, v) {
@@ -1247,7 +1272,7 @@ function toggleDev(dev) {
     recordCmd('蜂鸣器 ' + (buzzerState.on ? '开' : '关'), 0x02, buzzerState.on);
   }
 }
-const CAR_ACT_NAME = { 1:'前进', 2:'停止', 3:'后退', 4:'左转', 5:'右转', 6:'调速' };
+const CAR_ACT_NAME = { 1:'前进', 2:'停止', 3:'后退', 4:'左转', 5:'右转', 6:'调速', 7:'急停', 8:'解除急停' };
 function carCmd(act) {
   const speed = parseInt(document.getElementById('speed').value);
   pubCmd(3, act, speed, (act === 4 || act === 5) ? 1000 : 0);
@@ -1416,7 +1441,9 @@ function drawSeries(c, arr, min, max, W, H, color, unit, side) {
   c.font = '600 11px Bahnschrift, Consolas, monospace';
   const tw = c.measureText(txt).width;
   // 两条曲线的最新点可能挨得很近，气泡一上一下错开，避免叠在一起
-  const bx = Math.min(last.x + 7, W - tw - 8);
+  /* 气泡画在最新点的**左边**。原来画在右边，而最新点正好贴着绘图区右边界，
+     气泡就落进了右轴刻度那一栏，和刻度数字叠在一起。 */
+  const bx = Math.max(PAD.l + 4, last.x - tw - 12);
   const by = side === 'left' ? last.y - 8 : last.y + 16;
   c.fillStyle = chartTheme().tipBg;
   c.fillRect(bx - 3, by - 9, tw + 6, 14);
@@ -1486,6 +1513,28 @@ function renderTrendChart(canvas, hoverIdx) {
 
   drawSeries(c, tempData, tLo, tHi, W, H, chartTheme().temp, '℃', 'left');
   drawSeries(c, humiData, hLo, hHi, W, H, chartTheme().humi, '%', 'right');
+
+  /* 图例。两条线、两根纵轴，不标出来的话只能靠颜色去猜哪条是哪条、
+     左轴是谁的刻度。画在绘图区左上角，带半透明底，压在曲线上也读得清。 */
+  {
+    const items = [['温度 ℃（左轴）', chartTheme().temp], ['湿度 %（右轴）', chartTheme().humi]];
+    c.font = '11px Bahnschrift, "Microsoft YaHei", sans-serif';
+    let lx = PAD.l + 8;
+    const ly = PAD.t + 9;
+    const totalW = items.reduce((w, it) => w + c.measureText(it[0]).width + 26, 0);
+    c.fillStyle = chartTheme().tipBg;
+    c.globalAlpha = 0.75;
+    c.fillRect(lx - 6, ly - 8, totalW, 16);
+    c.globalAlpha = 1;
+    c.textAlign = 'left'; c.textBaseline = 'middle';
+    items.forEach(([label, col]) => {
+      c.fillStyle = col;
+      c.fillRect(lx, ly - 1, 12, 3);
+      c.fillStyle = chartTheme().label;
+      c.fillText(label, lx + 16, ly);
+      lx += c.measureText(label).width + 26;
+    });
+  }
 
   // 悬停十字线 + 该时刻两个数值
   if (hoverIdx >= 0 && hoverIdx < n) {
@@ -1712,7 +1761,7 @@ async function loadHistoryEvents() {
       return '<div class="alert-item ' + lv + '">' +
         '<div class="ic"></div>' +
         '<div class="body"><div class="t">' + esc(e.title) + '　<span style="color:var(--text-faint);font-size:11px;">' + esc(e.device) + '</span></div>' +
-        '<div class="m">' + esc(e.msg || '') + '</div></div>' +
+        '<div class="m">' + humanizeEventMsg(e.msg) + '</div></div>' +
         '<div class="ts">' + d.toLocaleDateString('zh-CN') + '<br>' +
         d.toLocaleTimeString('zh-CN', { hour12:false }) + '</div></div>';
     }).join('');
@@ -1721,6 +1770,32 @@ async function loadHistoryEvents() {
     list.innerHTML = '<div class="empty-hint">读取历史事件失败：' + esc(e.message) +
       '<br>确认服务器上 edgemonitor-history 服务在跑</div>';
   }
+}
+
+/* 历史事件的正文。服务器落库时存的是设备发来的原始 JSON，
+   原样显示就是 {"online": 1, "dev": "robot01", "ip": "192.168.100.3", "video": 8081}
+   —— 那是给程序看的。这里翻成"IP 192.168.100.3 · 视频端口 8081"。
+   不认识的字段照样列出来（键名原样），宁可难看一点也不能把信息吞掉。
+   解析失败（本来就是一句话）就原样显示。 */
+const EVENT_FIELD = {
+  ip: ['IP', ''], video: ['视频端口', ''], bat: ['电池', ' V'],
+  t: ['温度', ' ℃'], h: ['湿度', ' %'], l: ['光照', ' %'], d: ['距离', ' cm'],
+  fw: ['固件', ''], slot: ['分区', ''], ver: ['版本', '']
+};
+const EVENT_SKIP = { dev: 1, online: 1, ts: 1 };
+function humanizeEventMsg(raw) {
+  if (raw == null || raw === '') return '';
+  let o;
+  try { o = JSON.parse(raw); } catch (e) { return esc(raw); }
+  if (!o || typeof o !== 'object') return esc(raw);
+  const parts = [];
+  if ('online' in o && Object.keys(o).length <= 2) parts.push(o.online ? '已上线' : '已离线');
+  Object.keys(o).forEach(k => {
+    if (EVENT_SKIP[k]) return;
+    const f = EVENT_FIELD[k];
+    parts.push(f ? f[0] + ' ' + esc(o[k]) + f[1] : esc(k) + ' ' + esc(o[k]));
+  });
+  return parts.length ? parts.join('<span class="ev-sep">·</span>') : esc(raw);
 }
 
 // 历史事件的内容里有设备名和消息体，虽然目前都是自家程序写进去的，
@@ -1990,7 +2065,6 @@ function drawSpark(id, key, color) {
 }
 
 function updateSparks() {
-  drawSpark('sparkUptime', 'Uptime', '#4d9fff');
   drawSpark('sparkFrames', 'Frames', '#35d6ff');
   drawSpark('sparkAlerts', 'Alerts', '#ffab3d');
   drawSpark('sparkHealth', 'Health', '#3ddc97');

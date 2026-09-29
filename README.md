@@ -35,15 +35,41 @@
 
 ### Web 端
 
-![Web 数据大屏](docs/images/web-dashboard-dark.png)
+![大屏登录页](docs/images/大屏登陆页面.png)
 
-数据大屏。**截图是未连接设备时的空状态** —— 各面板显示的是各自的"没有数据"
-提示而不是假数字，这本身也是设计的一部分（见"不让故障伪装成正常"）。
+登录页。账号就是 MQTT 账号，浏览器直接用它经 WebSocket 连 broker，
+Web 服务器本身不保存任何口令。
 
-![Web 控制台日间模式](docs/images/web-console-light.png)
+![数据大屏监控页](docs/images/数据大屏监控页.png)
 
-控制台（日间模式）。大屏固定深色、控制台可切换日夜；
-两者的主色保持同一族，不会切个主题就换一种品牌色。
+数据大屏（实机截图，设备在线）：
+- **环境监测**：圆环 + 状态词（正常 / 注意 / 告警 / 失联）。颜色要走近才分得清，一个词隔几米也能读。
+- **顶部指标**：迷你柱状图只画**增量**（每个上报周期的帧数、新增告警），累计值画出来只是一道没有信息量的斜坡。
+- **温湿度趋势**：双纵轴带图例，末端数值标签不压右轴刻度。
+- **设备定位**：高德瓦片，浏览器端把 WGS-84 转成 GCJ-02 再落点；没收到定位时显示南航将军路校区，并明确写出"演示位置，不是车的实际位置"。
+- **实时视频**：经 Web 服务器同源中转（见下文"视频中转"），断线指数退避自动重连。
+- **姿态水平仪**：MPU6050 没有磁力计，航向是**相对上电朝向**，界面上照实写出来。
+
+![设备控制](docs/images/web设备控制.png)
+
+设备控制。十字方向键 + 独立的红色**急停**：急停发的是固件的 `ACT_ESTOP`
+（硬拉低驱动使能并锁定，需手动"解除急停"），不是普通停车。
+
+![告警中心](docs/images/web告警中心.png)
+
+告警中心：阈值与传感器失联告警，按级别着色。
+
+![历史数据](docs/images/web历史数据.png)
+
+历史数据：查询 VM 上 `history_logger.py` 落库的数据与事件，事件的原始 JSON 翻成人话显示。
+
+![OTA 升级](docs/images/webOTA升级.png)
+
+OTA 升级：上传固件 → 经 MQTT 下发 → 网关走 CAN/UDS 刷写 STM32 的 A/B 分区。
+
+![系统设置](docs/images/web系统设置.png)
+
+系统设置。控制台可切换日夜主题，大屏固定深色。
 
 ---
 
@@ -192,9 +218,20 @@ sudo systemctl stop mosquitto; sleep 3; sudo systemctl restart mosquitto
 cp deploy/edgemonitor-server.env.example /etc/edgemonitor-server.env   # 改密码
 python3 server/history_logger.py
 
-# Web 大屏（静态文件）
-cd web && python3 -m http.server 8080
+# Web 大屏（静态文件 + /video 中转）
+sudo cp deploy/systemd/edgemonitor-web.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now edgemonitor-web
 ```
+
+> **视频中转**：浏览器会拦截网页去访问局域网里的另一台设备
+> （Private Network Access，表现为 `ERR_BLOCKED_BY_CLIENT`），经 Tailscale 远程访问时
+> 更是根本到不了板子的内网 IP。所以 `server/web_server.py` 提供同源的
+> `/video?host=<板子IP>`，由服务器去拉板子 8081 的 MJPEG 再转给浏览器。
+> 只允许转发到**私有 IPv4 字面地址**，拒绝回环、公网地址和主机名，防止被当成跳板。
+>
+> 板子上的 `video_v4l2 auto 8081` 按 sysfs 驱动名 `uvcvideo` 自动找摄像头
+> （USB 重新枚举后 `video2` 可能变成 `video3`），采集失败直接退出由守护脚本拉起，
+> 而不是留一个"HTTP 活着却不出帧"的僵尸进程。
 
 > 那个 `stop` + `sleep 3` 不是凑数：mosquitto 在某些发行版上是 LSB init 服务，
 > `systemctl restart` 的 stop 阶段可能杀不干净旧进程，新实例绑不上 1883 就退出，
@@ -641,7 +678,7 @@ scripts/              开发辅助工具（见下）
 | 路线回放 | **开环**，不修偏差；RTK 通了之后才谈得上闭环跟踪 |
 | VM 侧 broker | **没有 ACL**，单账号。板子这头已锁好，攻击面转移到了 VM |
 | TLS | mosquitto 预留了 8084 listener，未实际启用 |
-| 急停 | 固件支持 `ACT_ESTOP`，Web 大屏尚无按钮 |
+| 急停 | Web 控制台已有急停 / 解除急停按钮，**尚未在实车上验证** |
 | `adc_light.c` | 已扩成 ADC1 的独占持有者（光敏 + 电池两路），文件名不再贴切，待重命名 |
 | 视频 / 远程屏幕 | 走明文 HTTP，仅适合内网 |
 | 拼音输入 | 无整句输入、无云词库、无用户习惯学习，候选只有词库里的固定词条 |
