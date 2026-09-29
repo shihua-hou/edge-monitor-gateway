@@ -647,16 +647,65 @@ function onDeviceOnline(id, d) {
 
 /* 视频源按当前设备的通告地址挂载。broker 在服务器、视频服务在各自的机器人
    本机，所以地址只能来自设备自报，不能用 broker 地址拼 */
+/* 视频断线自动重连。
+ *
+ * MJPEG 是用一个 <img> 拉的一条**不结束的** HTTP 响应。它有个很坑的特性：
+ * 连接一旦断过一次（板子换 IP 的那几秒、WiFi 抖一下、视频服务重启），
+ * <img> 就停在碎图上，**永远不会自己重试**——只能刷新整个页面。
+ * 大屏是挂在墙上长期看的，没人会去刷新，于是一次几秒钟的抖动
+ * 就变成了"视频一直是坏的"。
+ *
+ * 所以在 onerror 里接管：先把碎图藏起来、换成"正在重连"的说明，
+ * 再退避重试（3s 起步，翻倍，封顶 15s）。
+ * 重试时 URL 带一个时间戳：同一个 src 字符串重新赋值，浏览器可能直接复用
+ * 失败的结果而不发新请求。 */
+let videoRetryTimer = null;
+let videoRetryDelay = 3000;
+
+function setVideoEmptyText(title, sub) {
+  const empty = document.getElementById('videoEmpty');
+  if (!empty) return;
+  const b = empty.querySelector('b'), sp = empty.querySelector('span');
+  if (b && empty.dataset.t0 === undefined) {
+    /* 第一次改之前把原文存下来，恢复时用——不在 JS 里再抄一份文案，
+       否则 HTML 里改了措辞，这里的备份就悄悄过时了 */
+    empty.dataset.t0 = b.textContent;
+    empty.dataset.s0 = sp ? sp.textContent : '';
+  }
+  if (b) b.textContent = title !== undefined ? title : empty.dataset.t0;
+  if (sp) sp.textContent = sub !== undefined ? sub : empty.dataset.s0;
+}
+
 function applyVideoSource() {
   const stream = document.getElementById('stream');
   const empty = document.getElementById('videoEmpty');
   if (!stream) return;
   const d = devices[currentDevice];
   const ok = !!(d && d.online && d.ip);
+  clearTimeout(videoRetryTimer);
   if (ok) {
+    stream.onerror = function () {
+      const d2 = devices[currentDevice];
+      if (!(d2 && d2.online && d2.ip)) return;   /* 设备真离线了就别重试，交给离线态 */
+      stream.hidden = true;
+      if (empty) empty.classList.remove('hide');
+      setVideoEmptyText('视频连接中断',
+        Math.round(videoRetryDelay / 1000) + ' 秒后自动重连（' + d2.ip + ':' + (d2.video || 8081) + '）');
+      videoRetryTimer = setTimeout(function () {
+        videoRetryDelay = Math.min(videoRetryDelay * 2, 15000);
+        applyVideoSource();
+      }, videoRetryDelay);
+    };
+    /* 拿到第一帧就算恢复：退避时间归位，说明文字还原 */
+    stream.onload = function () {
+      videoRetryDelay = 3000;
+      setVideoEmptyText();
+    };
     stream.src = 'http://' + d.ip + ':' + (d.video || 8081) +
-                 '/?action=stream&token=' + encodeURIComponent(videoToken);
+                 '/?action=stream&token=' + encodeURIComponent(videoToken) +
+                 '&_=' + Date.now();
   } else {
+    setVideoEmptyText();
     stream.removeAttribute('src');   // 设备离线还留着画面会让人以为是实时的
   }
   /* 用 hidden 而不是把 src 清空了事：没有 src 的 <img> 会被浏览器画成碎图，
@@ -1051,9 +1100,19 @@ function updateHorizon(pitch, roll, yaw) {
   // pitch 上下平移模拟俯仰（限幅避免转出画面），roll 用旋转
   const clampedPitch = Math.max(-45, Math.min(45, pitch));
   sky.style.transform = 'translateY(' + (clampedPitch * 1.6) + 'px) rotate(' + (-roll) + 'deg)';
-  document.getElementById('compassNeedle').style.transform = 'rotate(' + yaw + 'deg)';
+  /* 航向归一化到 0~360。IMU 给的是累积角，会出现 -141° 或 725° 这种值——
+     数学上等价，但人读罗盘时要换算一下才知道朝哪。 */
+  const hdg = ((yaw % 360) + 360) % 360;
+  /* translateY 必须和 rotate 写在一起：内联 transform 会整个覆盖 CSS 里的 transform。
+     指针以底边为轴转，而底边默认在罗盘中心下方半个针长处——
+     先上移半个针长，轴心才落在罗盘正中。 */
+  document.getElementById('compassNeedle').style.transform =
+    'translateY(-11px) rotate(' + hdg + 'deg)';
+  /* **标明是"相对航向"**。MPU6050 没有磁力计，偏航角是陀螺从开机那一刻
+     积分出来的：0° 是"上电时车头的朝向"，不是北，而且会随时间漂移。
+     罗盘的外观天然暗示"指北"，不写清楚就会被当成真航向用。 */
   document.getElementById('horizonLabel').textContent =
-    'P ' + pitch.toFixed(1) + '°  R ' + roll.toFixed(1) + '°  Y ' + yaw.toFixed(1) + '°';
+    '俯仰 ' + pitch.toFixed(1) + '°  横滚 ' + roll.toFixed(1) + '°  航向 ' + hdg.toFixed(0) + '°（相对上电朝向）';
 }
 
 // ============================================================
@@ -2238,8 +2297,42 @@ let gpsPlaceholder = null;
    当成车的实际位置——续航估算那里踩过同样的坑：估算值不标明是估算，
    就会被当实测值用。所以这里用虚线空心圈（和真实定位的实心标记完全不同），
    文字里写明"演示位置"，并且真实定位一到就立刻把它撤掉。 */
-const GPS_PLACEHOLDER = [32.0357, 118.8036];
-const GPS_PLACEHOLDER_NAME = '南京航空航天大学（明故宫校区）';
+/* 坐标来自高德 POI 搜索"南京航空航天大学(将军路校区)，将军路29号"，
+   是 **GCJ-02**——和下面用的高德瓦片同一个坐标系，直接画不用转。
+   凭记忆写一个坐标的话，偏一两百米是常事，而这是整张图唯一的参照点。 */
+const GPS_PLACEHOLDER = [31.938249, 118.792231];
+const GPS_PLACEHOLDER_NAME = '南京航空航天大学（将军路校区）';
+
+/* WGS-84 -> GCJ-02。
+   GNSS 给的是 WGS-84，高德瓦片是 GCJ-02，国内差 300~500 米。
+   不转的话车会画到隔壁街区去，而且看着完全像"定位不准"。
+   业界通用的近似实现（官方算法不公开），误差 1~5 米，看位置足够；
+   要厘米级精度的地方（路径录制）不走这条转换。 */
+function wgs84ToGcj02(lat, lon) {
+  if (lon < 72.004 || lon > 137.8347 || lat < 0.8293 || lat > 55.8271) return [lat, lon];
+  const a = 6378245.0, ee = 0.00669342162296594323, PI = Math.PI;
+  const tLat = (x, y) => {
+    let r = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    r += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+    r += (20 * Math.sin(y * PI) + 40 * Math.sin(y / 3 * PI)) * 2 / 3;
+    r += (160 * Math.sin(y / 12 * PI) + 320 * Math.sin(y * PI / 30)) * 2 / 3;
+    return r;
+  };
+  const tLon = (x, y) => {
+    let r = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    r += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+    r += (20 * Math.sin(x * PI) + 40 * Math.sin(x / 3 * PI)) * 2 / 3;
+    r += (150 * Math.sin(x / 12 * PI) + 300 * Math.sin(x / 30 * PI)) * 2 / 3;
+    return r;
+  };
+  let dLat = tLat(lon - 105, lat - 35), dLon = tLon(lon - 105, lat - 35);
+  const rad = lat / 180 * PI;
+  let m = Math.sin(rad); m = 1 - ee * m * m;
+  const sm = Math.sqrt(m);
+  dLat = (dLat * 180) / ((a * (1 - ee)) / (m * sm) * PI);
+  dLon = (dLon * 180) / (a / sm * Math.cos(rad) * PI);
+  return [lat + dLat, lon + dLon];
+}
 
 function showGpsPlaceholder() {
   if (!gpsMap || !window.L) return;
@@ -2279,13 +2372,26 @@ function initMap() {
     return;
   }
   gpsMap = L.map('map').setView(GPS_PLACEHOLDER, 15);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© OpenStreetMap'
+  /* 瓦片用高德而不是 OpenStreetMap：
+     ① OSM 的瓦片服务器在国内经常加载不出来，大屏上就是一块灰；
+     ② 国内公开地图按法规用 GCJ-02，高德瓦片和车载端 Qt 地图是同一套，
+        两边看到的位置对得上。 */
+  L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+    subdomains: ['1', '2', '3', '4'], maxZoom: 18, attribution: '© 高德地图'
   }).addTo(gpsMap);
   gpsMarker = L.marker(GPS_PLACEHOLDER).addTo(gpsMap);
   /* 真实定位到来之前先把实心标记藏起来，免得它被当成车的位置 */
   gpsMap.removeLayer(gpsMarker);
   gpsTrack = L.polyline([], { color: '#3ddc97', weight: 2 }).addTo(gpsMap);
+
+  /* **初始化完就把占位点放上去**，不要等第一条 GPS 消息。
+     原来占位点只在 updateGps 里显示，而模块没插的时候 gps_mqtt 一条消息
+     都不发——于是"等待 GPS 定位"的遮罩永远撤不掉，地图一直是空的。
+     "没有消息"本身就是最常见的情况，得有人管。 */
+  showGpsPlaceholder();
+  const info = document.getElementById('gpsInfo');
+  if (info && !info.textContent.trim())
+    info.textContent = '未收到定位数据 · 地图上是 ' + GPS_PLACEHOLDER_NAME + '，演示位置，不是车的实际位置';
 }
 function updateGps(data) {
   const info = document.getElementById('gpsInfo');
@@ -2316,7 +2422,9 @@ function updateGps(data) {
   info.textContent = '纬度 ' + lat.toFixed(6) + '  经度 ' + lon.toFixed(6) +
     '  卫星 ' + (data.sat || '-') + '  速度 ' + num(data.speed) + ' km/h';
 
-  const pos = [lat, lon];
+  /* 文字里显示 GNSS 原值（WGS-84），画图用转换后的（GCJ-02）。
+     两者故意不一样：前者是给人核对模块读数的，后者是给地图用的。 */
+  const pos = wgs84ToGcj02(lat, lon);
   gpsPoints.push(pos);
   if (gpsPoints.length > 200) gpsPoints.shift();
 
